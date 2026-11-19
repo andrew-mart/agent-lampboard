@@ -13760,6 +13760,16 @@ a.file-link:hover {
     display: grid;
   }
 
+  /* attach, paste and clear at the row's start stand close: as tall as a finger needs, not as wide — a square each
+     left a gap wider than an icon between them */
+  .composer-tools {
+    gap: 0;
+  }
+
+  .composer-tools > :is(.composer-attach, .composer-paste, .composer-clear) {
+    width: 32px;
+  }
+
 
   .composer-input,
   .search {
