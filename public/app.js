@@ -2381,10 +2381,10 @@ function herdrTabButtonFor(sessionId) {
 }
 
 /**
- * The row of a session's details that restarts it — Claude Code quits in its herdr tab and resumes it there, with the
- * variables the viewer was given, or in the other launcher: through GPT, or in ordinary Claude Code — or quits it to the
- * tab's shell, Claude Code or Codex, once a second press confirms it; there while it runs in either in herdr, its
- * buttons hidden — and the row with them — otherwise.
+ * The row of a session's details that restarts it — Claude Code or Antigravity CLI quits in its herdr tab and resumes
+ * it there (for Claude Code, also with the variables the viewer was given, or in the other launcher: through GPT, or in
+ * ordinary Claude Code) — or quits it to the tab's shell, Claude Code, Codex or agy, once a second press confirms it;
+ * there while it runs in one of them in herdr, its buttons hidden — and the row with them — otherwise.
  * @param {string} sessionId
  * @param {() => boolean} throughGpt — whether the session runs through GPT now, as the history of the sessions tells
  * @returns {{ row: HTMLElement, show: (layout: import('./model/herdr.js').HerdrLayout) => void }}
@@ -2396,7 +2396,7 @@ function restartButtonFor(sessionId, throughGpt) {
     return { button, show: restartButton(button, sessionId, { variables, launcher, throughGpt, restart: (asked) => changeTab('/api/session/restart', { session: sessionId, variables, launcher: asked }) }) };
   };
   const buttons = [made('none', 'as-it-ran'), made('given', 'as-it-ran'), made('none', 'other')];
-  // and beside them Claude Code — or Codex — quit to the tab's shell
+  // and beside them Claude Code, Codex or agy quit to the tab's shell
   const exiting = h('button', { className: 'head-restart head-exit', attrs: { type: 'button' } });
   const showExit = exitButton(exiting, sessionId, { exit: () => changeTab('/api/session/exit', { session: sessionId }) });
   const named = h('dt', { text: 'Restart' });

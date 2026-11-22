@@ -181,3 +181,47 @@ test('exitButton_Should_QuitAgentToShellOnSecondPress_ShownWhileClaudeCodexOrAgy
     },
   );
 });
+
+// For an agy session in a herdr tab, only the plain restart is shown — while the viewer has agy — naming Antigravity
+// CLI in its title; Claude Code's restart variables and other launcher stay hidden, and Codex still gets none
+test('restartButton_Should_OfferPlainRestartForAgyOnlyWhenViewerHasAgy_NamingAntigravityCli', async () => {
+  /** @type {import('../public/model/herdr.js').RestartLauncher[]} */
+  const asked = [];
+  /** @param {'given' | 'none'} variables @param {'as-it-ran' | 'other'} launcher */
+  const made = (variables, launcher) => {
+    const button = document.createElement('button');
+    const show = restartButton(button, session, { variables, launcher, throughGpt: () => false, restart: async (to) => (asked.push(to), { ok: true }) });
+    return { button, show };
+  };
+  const [plain, given, other] = [made('none', 'as-it-ran'), made('given', 'as-it-ran'), made('none', 'other')];
+  /** @param {import('../public/model/herdr.js').HerdrLayout} layout */
+  const showAll = (layout) => {
+    for (const one of [plain, given, other]) one.show(layout);
+    return [plain, given, other].map(({ button }) => (button.hidden ? 'hidden' : button.textContent));
+  };
+  const withAgy = { ...runningIn('agy'), agy: /** @type {const} */ (true), claudeGpt: /** @type {const} */ (true) };
+
+  const withoutAgyCommand = showAll({ ...runningIn('agy'), claudeGpt: true });
+  const inCodex = showAll({ ...runningIn('codex'), agy: true, claudeGpt: true });
+  const inAgy = showAll(withAgy);
+  const agyTitle = plain.button.title;
+  plain.button.click();
+  const askingTitle = plain.button.title;
+  plain.button.click();
+  await settled();
+  showAll(runningIn('claude'));
+  const backToClaude = plain.button.title;
+
+  assert.deepEqual(
+    { withoutAgyCommand, inCodex, inAgy, agyTitle, askingTitle, asked, backToClaude },
+    {
+      withoutAgyCommand: ['hidden', 'hidden', 'hidden'],
+      inCodex: ['hidden', 'hidden', 'hidden'],
+      inAgy: ['Restart the session', 'hidden', 'hidden'],
+      agyTitle: 'Restart the session: Antigravity CLI quits in its tab — its turn and background commands end — and resumes the session there',
+      askingTitle: 'Press again to restart: Antigravity CLI quits in its tab — its turn and background commands end — and resumes the session there',
+      asked: ['as-it-ran'],
+      backToClaude: 'Restart the session: Claude Code quits in its tab — its turn and background commands end — and resumes the session there',
+    },
+  );
+});

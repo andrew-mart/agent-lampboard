@@ -26,9 +26,10 @@ import { observed } from './session-history.js';
  * @typedef {{ herdr: boolean, sessions: Record<string, string>, icons: Record<string, string> }} SessionWorkspaces — the
  *   /api/workspaces reply.
  *   herdr: whether herdr answers; without it the page shows no workspaces. sessions: the workspace's name, by session id
- * @typedef {{ snapshot: import('./herdr.js').HerdrSnapshot, sessionByPane: ReadonlyMap<string, string>, byFolder: ReadonlyMap<string, string>, icons: ReadonlyMap<string, string>, hidden: ReadonlySet<string>, hiddenWorkspaces: ReadonlySet<string> } | undefined} HerdrView
- *   what herdr showed, the sessions running in its panes, the workspace of each folder, and each workspace's icon by
- *   its id; the panes hidden from the page's list, and the workspaces, by their ids; undefined: no herdr
+ * @typedef {{ snapshot: import('./herdr.js').HerdrSnapshot, sessionByPane: ReadonlyMap<string, string>, agyStarted: ReadonlySet<string>, byFolder: ReadonlyMap<string, string>, icons: ReadonlyMap<string, string>, hidden: ReadonlySet<string>, hiddenWorkspaces: ReadonlySet<string> } | undefined} HerdrView
+ *   what herdr showed, the sessions running in its panes, the agy panes before their first message (whose session id is
+ *   made up until agy creates a conversation), the workspace of each folder, and each workspace's icon by its id; the
+ *   panes hidden from the page's list, and the workspaces, by their ids; undefined: no herdr
  * @typedef {import('./herdr.js').Pane} Pane
  * @typedef {{ found: 'pane', pane: string, working: boolean } | { found: 'elsewhere' | 'none' }} AgentPlace — where a
  *   Codex session runs, an agy conversation: in a herdr pane, its agent at work or not; elsewhere — the agent has it
@@ -232,7 +233,7 @@ export function createHerdrView({ herdr, readRecords, codexThreads, icons, hidde
     const sessionByPane = new Map([...sessions, ...agy.started]);
     const iconed = await icons.iconsOf(snapshot.workspaces.map((workspace) => ({ id: workspace.id, label: workspace.label, folder: workspaceFolder(snapshot, workspace.id) })));
     const hiddenIds = await hiddenWorkspaces.hiddenAmong(snapshot.workspaces.map((workspace) => workspace.id));
-    return { snapshot, sessionByPane, byFolder: workspaceByFolder(snapshot.panes, workspaceLabels(snapshot)), icons: iconed, hidden: await hidden.hiddenAmong(snapshot.panes), hiddenWorkspaces: hiddenIds };
+    return { snapshot, sessionByPane, agyStarted: new Set(agy.started.keys()), byFolder: workspaceByFolder(snapshot.panes, workspaceLabels(snapshot)), icons: iconed, hidden: await hidden.hiddenAmong(snapshot.panes), hiddenWorkspaces: hiddenIds };
   };
 
   /**
@@ -292,6 +293,22 @@ export function createHerdrView({ herdr, readRecords, codexThreads, icons, hidde
   const iconUsed = async (before, name) => {
     const icon = splitTabIcon(name).icon;
     if (icon !== undefined && icon !== (before === undefined ? undefined : splitTabIcon(before).icon)) await recentIcons.use(icon);
+  };
+
+  /**
+   * Ends what runs in a pane over its shell — leaving the shell there; false if herdr does not tell the shell, nothing
+   * runs over it, or a process did not end.
+   * @param {string} paneId
+   * @returns {Promise<boolean>}
+   */
+  const endOverShell = async (paneId) => {
+    const info = await herdr(['pane', 'process-info', '--pane', paneId]);
+    const running = succeeded(info) ? overShell(info.json) : [];
+    if (running.length === 0) return false;
+    latest = undefined;
+    agyProcessesTold.delete(paneId);
+    for (const pid of running) if (!(await restart.endProcess(pid))) return false;
+    return true;
   };
 
   /** Pages that ask at once, or within refreshMs, share one look at herdr. */
@@ -535,10 +552,11 @@ export function createHerdrView({ herdr, readRecords, codexThreads, icons, hidde
       return changed(await herdr(['tab', 'focus', tabId]));
     },
     /**
-     * A Claude Code session restarted where it runs: its process ended — its turn and its background commands with it —
-     * and Claude Code started again in its tab resuming it, the variables given (--restart-env) set ahead of it, or
-     * none; in the launcher it ran in, or in the one asked — ordinary Claude Code, or Claude Code through GPT. A session
-     * running in no herdr tab, or whose process did not end, is not: nothing is typed over a Claude Code still there.
+     * A Claude Code or Antigravity CLI session restarted where it runs: its process ended — its turn and its background
+     * commands with it — and the agent started again in its tab resuming it; for Claude Code, the variables given
+     * (--restart-env) set ahead of it, or none, and in the launcher it ran in, or in the one asked — ordinary Claude
+     * Code, or Claude Code through GPT; for agy before its first message, started anew with no conversation id yet. A
+     * session running in no herdr tab, or whose process did not end, is not: nothing is typed over an agent still there.
      * @param {string} sessionId
      * @param {'given' | 'none'} variables — those given set ahead of Claude Code, or none: a plain restart
      * @param {import('../public/model/herdr.js').RestartLauncher} launcher
@@ -546,10 +564,19 @@ export function createHerdrView({ herdr, readRecords, codexThreads, icons, hidde
      */
     async restart(sessionId, variables, launcher) {
       const view = await currentView();
-      const pane = view?.snapshot.panes.find((one) => one.agent === 'claude' && view.sessionByPane.get(one.paneId) === sessionId);
-      const record = latestRecords(await readRecords()).get(sessionId);
+      const pane = view?.snapshot.panes.find((one) => (one.agent === 'claude' || one.agent === 'agy') && view.sessionByPane.get(one.paneId) === sessionId);
       // a session's id is typed into a shell: one that is no id is not
-      if (pane === undefined || record === undefined || !sessionIdPattern.test(sessionId)) return { ok: false, error: 'failed' };
+      if (view === undefined || pane === undefined || !sessionIdPattern.test(sessionId)) return { ok: false, error: 'failed' };
+      if (pane.agent === 'agy') {
+        if (agyCommand === undefined || launcher !== 'as-it-ran') return { ok: false, error: 'failed' };
+        if (!(await endOverShell(pane.paneId))) return { ok: false, error: 'failed' };
+        // the shell is back once agy is gone: what is typed meanwhile waits for it
+        await delay(shellStepMs);
+        const started = await startAgent(pane.paneId, 'agy', view.agyStarted.has(pane.paneId) ? undefined : { session: sessionId, as: 'resume' });
+        return started ? { ok: true } : { ok: false, error: 'failed' };
+      }
+      const record = latestRecords(await readRecords()).get(sessionId);
+      if (record === undefined) return { ok: false, error: 'failed' };
       if (!(await restart.endProcess(record.pid))) return { ok: false, error: 'failed' };
       latest = undefined;
       // the shell is back once Claude Code is gone: what is typed meanwhile waits for it
@@ -559,9 +586,9 @@ export function createHerdrView({ herdr, readRecords, codexThreads, icons, hidde
       return started ? { ok: true } : { ok: false, error: 'failed' };
     },
     /**
-     * A session's agent quit to its tab's shell: what runs over the shell — Claude Code, or Codex — ends, its turn and
-     * its background commands with it; the tab stays, at its shell's prompt. A session in no herdr tab, or a pane whose
-     * shell herdr does not tell, is not touched.
+     * A session's agent quit to its tab's shell: what runs over the shell — Claude Code, Codex, or Antigravity CLI —
+     * ends, its turn and its background commands with it; the tab stays, at its shell's prompt. A session in no herdr
+     * tab, or a pane whose shell herdr does not tell, is not touched.
      * @param {string} sessionId
      * @returns {Promise<import('../public/model/herdr.js').TabChange>}
      */
@@ -569,12 +596,7 @@ export function createHerdrView({ herdr, readRecords, codexThreads, icons, hidde
       const view = await currentView();
       const pane = view?.snapshot.panes.find((one) => view.sessionByPane.get(one.paneId) === sessionId);
       if (pane === undefined) return { ok: false, error: 'failed' };
-      const info = await herdr(['pane', 'process-info', '--pane', pane.paneId]);
-      const running = succeeded(info) ? overShell(info.json) : [];
-      if (running.length === 0) return { ok: false, error: 'failed' };
-      latest = undefined;
-      for (const pid of running) if (!(await restart.endProcess(pid))) return { ok: false, error: 'failed' };
-      return { ok: true };
+      return (await endOverShell(pane.paneId)) ? { ok: true } : { ok: false, error: 'failed' };
     },
     /**
      * A closed session opened again where it ran: a new tab of its workspace — the workspace opened again if it is gone,

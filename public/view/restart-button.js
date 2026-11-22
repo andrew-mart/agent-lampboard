@@ -1,10 +1,11 @@
 // @ts-check
-// A button in a session's details that restarts it: Claude Code quits in the session's herdr tab — its turn and its
-// background commands end — and starts again there resuming the session: plainly, or with the variables the viewer was
-// given (--restart-env), which that button names; or in the other launcher than it runs in — through GPT, or in
-// ordinary Claude Code. A first press asks — the button says to press again — a second, within a few seconds, restarts;
-// there while the session runs in Claude Code in a herdr tab — the one with variables only while there are some, the one
-// in the other launcher only while the viewer has Claude Code through GPT — none otherwise.
+// A button in a session's details that restarts it: Claude Code or Antigravity CLI quits in the session's herdr tab —
+// its turn and its background commands end — and starts again there resuming the session: plainly (Claude Code or agy),
+// or — for Claude Code — with the variables the viewer was given (--restart-env), which that button names; or in the
+// other launcher than it runs in — through GPT, or in ordinary Claude Code. A first press asks — the button says to
+// press again — a second, within a few seconds, restarts; there while the session runs in Claude Code or agy (when the
+// viewer has agy) in a herdr tab — the one with variables only for Claude Code while there are some, the one in the
+// other launcher only for Claude Code while the viewer has Claude Code through GPT — none otherwise.
 import { askerNames } from '../model/composer.js';
 import { placeOf } from '../model/herdr.js';
 import { h } from './dom.js';
@@ -22,6 +23,8 @@ const askingMs = 5000;
  * @returns {(layout: import('../model/herdr.js').HerdrLayout) => void} — the button shown anew for what herdr has now
  */
 export function restartButton(button, sessionId, { variables: set, launcher, throughGpt, restart }) {
+  /** The agent in the session's tab, as herdr told it last. */
+  let agent = 'Claude Code';
   /** The variables the session restarts with, as the viewer tells them. */
   /** @type {readonly string[]} */
   let variables = [];
@@ -33,7 +36,7 @@ export function restartButton(button, sessionId, { variables: set, launcher, thr
   const draw = (state) => {
     const to = target();
     const where = { 'as-it-ran': '', claude: ' in ordinary Claude Code', 'claude-gpt': ' through GPT' }[to];
-    const resumed = `Claude Code quits in its tab — its turn and background commands end — and resumes the session there${where}${variables.length === 0 ? '' : `, with ${variables.join(' ')}`}`;
+    const resumed = `${agent} quits in its tab — its turn and background commands end — and resumes the session there${where}${variables.length === 0 ? '' : `, with ${variables.join(' ')}`}`;
     const ready = { 'as-it-ran': variables.length === 0 ? 'Restart the session' : `Restart with ${variables.join(' ')}`, claude: 'Restart in Claude Code', 'claude-gpt': 'Restart in Claude GPT' }[to];
     const titles = { ready: `Restart the session: ${resumed}`, asking: `Press again to restart: ${resumed}`, failed: 'The session could not be restarted — press to try again' };
     const words = { ready, asking: 'Press again to restart', failed: 'Not restarted — try again' };
@@ -68,8 +71,10 @@ export function restartButton(button, sessionId, { variables: set, launcher, thr
   });
   return (layout) => {
     const pane = placeOf(layout, { kind: 'session', id: sessionId })?.tab.panes.find((one) => one.session === sessionId);
+    const restarting = pane?.agent === 'claude' || (pane?.agent === 'agy' && layout.agy === true && set === 'none' && launcher === 'as-it-ran') ? pane.agent : undefined;
     variables = set === 'given' ? (layout.restartEnv ?? []) : [];
-    button.hidden = pane?.agent !== 'claude' || (set === 'given' && variables.length === 0) || (launcher === 'other' && layout.claudeGpt !== true);
+    button.hidden = restarting === undefined || (set === 'given' && variables.length === 0) || (launcher === 'other' && layout.claudeGpt !== true);
+    if (restarting !== undefined) agent = askerNames[restarting];
     if (button.hidden) settle();
     if (asking === undefined && !button.classList.contains('failed')) draw('ready');
   };

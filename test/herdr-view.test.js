@@ -1336,3 +1336,95 @@ test('exit_Should_EndWhatRunsOverTabsShell_ForClaudeAndCodex_LeavingTheShell', a
 
   assert.deepEqual({ outcomes, ended }, { outcomes: [{ ok: true }, { ok: true }, { ok: false, error: 'failed' }, { ok: false, error: 'failed' }], ended: [101, 201] });
 });
+
+// An agy session restarted where it runs: what runs over its tab's shell ends — leaving the shell — and agy starts
+// again in its tab resuming its conversation, or anew before its first message (no synthetic started id typed), with
+// none of Claude Code's restart variables; refused without touching the pane when the viewer has no agy command, a
+// Claude launcher is asked, herdr tells no shell, or the process does not end
+test('restart_Should_EndAgyOverItsShell_AndResumeConversationOrStartFreshInItsTab', async () => {
+  const filters = 'c2da1db1-1271-4baa-aac2-0f4026b2453a';
+  const unknownShell = '9342f993-b892-4839-845d-ce2d261b092e';
+  const filtersRun = { serverPid: 51520, folder: 'D:\\shop', conversation: filters, print: false, ended: false, startedAt: 1000 };
+  const freshRun = { serverPid: 51521, folder: 'D:\\shop', conversation: undefined, print: false, ended: false, startedAt: 2000 };
+  const freshId = agyStartedId(freshRun);
+  const runs = [
+    filtersRun,
+    freshRun,
+    { serverPid: 51522, folder: 'D:\\shop', conversation: unknownShell, print: false, ended: false, startedAt: 3000 },
+  ];
+  /** @type {FakePane} */
+  const filtersPane = { pane_id: 'w2:p1', workspace_id: 'w2', tab_id: 'w2:t1', cwd: 'D:/shop', agent: 'agy', pid: 51520, shell_pid: 51500, argv: ['agy', '--conversation', filters] };
+  /** @type {FakePane[]} */
+  const panes = [
+    filtersPane,
+    { pane_id: 'w2:p2', workspace_id: 'w2', tab_id: 'w2:t2', cwd: 'D:/shop', agent: 'agy', pid: 51521, shell_pid: 51501, argv: ['agy'] },
+    { pane_id: 'w2:p3', workspace_id: 'w2', tab_id: 'w2:t3', cwd: 'D:/shop', agent: 'agy', pid: 51522, argv: ['agy', '--conversation', unknownShell] },
+  ];
+  const herdr = tabsHerdr({
+    opened: ['filters', 'fresh', 'unknown'].map((label, at) => ({ tab_id: `w2:t${at + 1}`, workspace_id: 'w2', number: at + 1, label, agent_status: 'idle' })),
+    panes,
+  });
+  /** @type {number[]} */
+  const ended = [];
+  /** @type {number[]} */
+  const vouched = [];
+  const env = [{ name: 'CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP', value: '1' }];
+  /** @param {{ hasAgy?: boolean, ends?: boolean, refreshMs?: number }} [setup] */
+  const viewer = ({ hasAgy = true, ends = true, refreshMs = 0 } = {}) =>
+    createHerdrView({
+      herdr: herdr.run,
+      readRecords: async () => [],
+      codexThreads: async () => [],
+      agyRuns: async () => runs,
+      agySeen: (pids) => vouched.push(...pids),
+      icons: noIcons,
+      hidden: noHidden,
+      hiddenWorkspaces: noHiddenWorkspaces,
+      file: join(tempDir('ccw-restart-agy-'), 'workspaces.json'),
+      refreshMs,
+      trust: { looks: 3, stepMs: 1 },
+      claudeCommand: 'claude',
+      codexCommand: 'codex',
+      agyCommand: hasAgy ? 'my-agy' : undefined,
+      restart: { env, shell: 'powershell', endProcess: async (pid) => (ended.push(pid), ends) },
+    });
+
+  // cached view & agyProcessesTold before restart: once restarted with a new process, the next layout sees it
+  const cached = viewer({ refreshMs: 60_000 });
+  await cached.layout();
+  const resumed = await cached.restart(filters, 'none', 'as-it-ran');
+  filtersPane.pid = 51599;
+  await cached.layout();
+  const vouchedAfterRestart = vouched.includes(51599);
+  filtersRun.serverPid = 51599;
+
+  const fresh = await viewer().restart(freshId, 'given', 'as-it-ran');
+  const refused = [
+    await viewer({ hasAgy: false }).restart(filters, 'none', 'as-it-ran'),
+    await viewer().restart(filters, 'none', 'claude-gpt'),
+    await viewer().restart(unknownShell, 'none', 'as-it-ran'),
+    await viewer({ ends: false }).restart(filters, 'none', 'as-it-ran'),
+  ];
+
+  assert.deepEqual(
+    { resumed, fresh, refused, ended, typed: herdr.changes, vouchedAfterRestart },
+    {
+      resumed: { ok: true },
+      fresh: { ok: true },
+      refused: [
+        { ok: false, error: 'failed' },
+        { ok: false, error: 'failed' },
+        { ok: false, error: 'failed' },
+        { ok: false, error: 'failed' },
+      ],
+      ended: [51520, 51521, 51599],
+      typed: [
+        `pane send-text w2:p1 my-agy --conversation ${filters}`,
+        'pane send-keys w2:p1 enter',
+        'pane send-text w2:p2 my-agy',
+        'pane send-keys w2:p2 enter',
+      ],
+      vouchedAfterRestart: true,
+    },
+  );
+});
