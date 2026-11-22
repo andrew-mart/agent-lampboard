@@ -1,18 +1,19 @@
 // @ts-check
-// Claude Code asks, the first time it starts in a folder, whether to trust it — a dialog of arrow keys and Enter that a
-// phone cannot get through. Claude Code the viewer starts — in a new tab or workspace, or resuming a session — is
-// started in a folder the user chose: the viewer answers yes for them.
+// Claude Code and Antigravity CLI (agy) ask, the first time they start in a folder, whether to trust it — a dialog of
+// arrow keys and Enter that a phone cannot get through. An agent the viewer starts — in a new tab or workspace, or
+// resuming a session — is started in a folder the user chose: the viewer answers yes for them.
 import { setTimeout as delay } from 'node:timers/promises';
 
 /**
  * @typedef {{ cursor: 'yes' | 'no' }} TrustDialog — where the cursor stands among the answers
  */
 
-/** The question, as Claude Code 2 asks it and as older versions did. */
-const trustQuestion = /trust this folder|Do you trust the files in this folder/i;
-/** The answer yes, in either. */
+/** The question, as Claude Code 2, older Claude Code and agy ask it. */
+const trustQuestion = /trust this folder|Do you trust the (?:files in this folder|contents of this project)/i;
+/** The answer under the cursor — Claude Code's "❯", agy's ">": yes or no. */
 const yesAnswer = /Yes, (?:I trust this folder|proceed)/;
-/** Claude Code at work: its welcome or its prompt box's hint. */
+const chosenAnswer = /^\s*[❯>]\s+(?:\d+\.\s+)?(?:Yes, (?:I trust this folder|proceed)|No, exit)\b/;
+/** The agent at work: its welcome or its prompt box's hint. */
 const atWork = /Claude Code v\d|Welcome to Claude Code|for shortcuts/;
 
 /**
@@ -22,7 +23,7 @@ const atWork = /Claude Code v\d|Welcome to Claude Code|for shortcuts/;
  */
 export function trustDialogOf(screen) {
   if (!trustQuestion.test(screen)) return undefined;
-  const chosen = screen.split('\n').find((line) => /^\s*❯/.test(line));
+  const chosen = screen.split('\n').find((line) => chosenAnswer.test(line));
   if (chosen === undefined) return undefined;
   return { cursor: yesAnswer.test(chosen) ? 'yes' : 'no' };
 }

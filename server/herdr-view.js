@@ -248,8 +248,8 @@ export function createHerdrView({ herdr, readRecords, codexThreads, icons, hidde
 
   /**
    * Claude Code, Codex or Antigravity CLI in a new tab's shell: its command typed once the shell shows its prompt — what is typed before
-   * it may be lost. Claude Code asked whether to trust the folder the user chose for it is answered yes, out of the
-   * reply's way.
+   * it may be lost. Claude Code or Antigravity CLI asked whether to trust the folder the user chose for it is answered
+   * yes, out of the reply's way.
    * @param {string} pane
    * @param {Exclude<import('../public/model/herdr.js').TabStart, 'shell'>} agent
    * @param {GoOn | undefined} goOn — the session it goes on with: resumed, or forked into a new one; none for a new session
@@ -280,7 +280,7 @@ export function createHerdrView({ herdr, readRecords, codexThreads, icons, hidde
     if (started && gpt) gptPanes.add(pane);
     if (started && agent === 'codex') codexStarts.set(pane, startedAt);
     if (started && claude && goOn?.as === 'resume') launches.set(goOn.session, { launcher: gpt ? 'claude-gpt' : 'claude', at: Date.now() });
-    if (started && claude) void acceptTrust(herdr, pane, trust).catch(() => undefined); // herdr gone meanwhile: nothing to answer
+    if (started && (claude || agent === 'agy')) void acceptTrust(herdr, pane, trust).catch(() => undefined); // herdr gone meanwhile: nothing to answer
     return started;
   };
 

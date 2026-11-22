@@ -610,18 +610,32 @@ test('renameTab_And_closeTab_Should_TellWhatWasNotDone', async () => {
   assert.deepEqual({ outcomes, unsent: quiet.changes }, { outcomes: [{ ok: false, error: 'empty' }, { ok: false, error: 'failed' }, { ok: false, error: 'failed' }], unsent: [] });
 });
 
-// Claude Code started in a new tab asks whether to trust its folder — a dialog a phone cannot get through: the viewer
-// takes the cursor to yes and answers for the user, who chose the folder
-test('createTab_Should_AnswerYes_When_ClaudeStartedInItAsksToTrustFolder', async () => {
+// Claude Code or Antigravity CLI started in a new tab asks whether to trust its folder — a dialog a phone cannot get
+// through: the viewer takes the cursor to yes, if it is not there yet, and answers for the user, who chose the folder
+test('createTab_Should_AnswerYes_When_ClaudeOrAgyStartedInItAsksToTrustFolder', async () => {
   const question = (/** @type {'no' | 'yes'} */ cursor) => ` Is this a project you created or one you trust?\n\n ${cursor === 'no' ? '❯' : ' '} No, exit\n ${cursor === 'yes' ? '❯' : ' '} Yes, I trust this folder\n`;
-  const herdr = tabsHerdr({ screens: ['ann@box:~$ ', question('no'), question('yes')] });
-  const view = await tabsView(herdr, 'claude-fast');
+  const claudeHerdr = tabsHerdr({ screens: ['ann@box:~$ ', question('no'), question('yes')] });
+  const agyHerdr = tabsHerdr({ screens: ['ann@box:~$ ', 'Do you trust the contents of this project?\n\n> Yes, I trust this folder\n  No, exit\n\n  ↑/↓ Navigate · enter Confirm'] });
+  /** @param {ReturnType<typeof tabsHerdr>} herdr */
+  const viewOf = (herdr) => createHerdrView({ herdr: herdr.run, readRecords: async () => [], codexThreads: async () => [], icons: noIcons, hidden: noHidden, hiddenWorkspaces: noHiddenWorkspaces, file: join(tempDir('ccw-trust-'), 'workspaces.json'), refreshMs: 60_000, trust: { looks: 3, stepMs: 1 }, claudeCommand: 'claude-fast', codexCommand: 'codex-yolo', agyCommand: 'agy-yolo' });
 
-  await view.createTab('w2:t1', 'claude', undefined);
-  for (let wait = 0; wait < 50 && !herdr.changes.includes('pane send-keys w2:p3 down'); wait++) await new Promise((done) => setTimeout(done, 5));
+  await viewOf(claudeHerdr).createTab('w2:t1', 'claude', undefined);
+  await viewOf(agyHerdr).createTab('w2:t1', 'agy', undefined);
+  for (let wait = 0; wait < 50 && (!claudeHerdr.changes.includes('pane send-keys w2:p3 down') || agyHerdr.changes.filter((change) => change === 'pane send-keys w2:p3 enter').length < 2); wait++) {
+    await new Promise((done) => setTimeout(done, 5));
+  }
   await new Promise((done) => setTimeout(done, 20));
 
-  assert.deepEqual(herdr.changes.filter((change) => change.startsWith('pane')), ['pane send-text w2:p3 claude-fast', 'pane send-keys w2:p3 enter', 'pane send-keys w2:p3 down', 'pane send-keys w2:p3 enter']);
+  assert.deepEqual(
+    {
+      claude: claudeHerdr.changes.filter((change) => change.startsWith('pane')),
+      agy: agyHerdr.changes.filter((change) => change.startsWith('pane')),
+    },
+    {
+      claude: ['pane send-text w2:p3 claude-fast', 'pane send-keys w2:p3 enter', 'pane send-keys w2:p3 down', 'pane send-keys w2:p3 enter'],
+      agy: ['pane send-text w2:p3 agy-yolo', 'pane send-keys w2:p3 enter', 'pane send-keys w2:p3 enter'],
+    },
+  );
 });
 
 // A workspace renamed from the page gets its name in herdr — on one line — and one closed is closed there; a name of

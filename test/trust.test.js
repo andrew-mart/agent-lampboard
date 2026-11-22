@@ -20,12 +20,34 @@ const dialog = (/** @type {'no' | 'yes'} */ cursor) =>
     ' Enter to confirm · Esc to cancel',
   ].join('\n');
 
-// The question whether to trust the folder is told by its answers, and where the cursor stands — on no, as it opens, or
-// on yes; older Claude Code asked it with "Yes, proceed"; Claude Code at work asks nothing
+/** Antigravity CLI's dialog, as its terminal shows it: the cursor opens on yes. */
+const agyDialog = [
+  '      ▄▀▀▄        Antigravity CLI 1.5.9',
+  '   ▄▀▀    ▀▀▄     ~/shop',
+  '',
+  'Do you trust the contents of this project?',
+  'agy may read and run files in ~/shop.',
+  '',
+  '> Yes, I trust this folder',
+  '  No, exit',
+  '',
+  '  ↑/↓ Navigate · enter Confirm',
+].join('\n');
+
+// The question whether to trust the folder is told by its answers, and where the cursor stands — on no, as Claude Code
+// opens it, or on yes, as Antigravity CLI and older Claude Code ("Yes, proceed") do; an agent at work asks nothing,
+// though a prompt on its screen names the question
 test('trustDialogOf_Should_FindQuestionAndWhereCursorStands', () => {
   assert.deepEqual(
-    [dialog('no'), dialog('yes'), ' Do you trust the files in this folder?\n\n ❯ 1. Yes, proceed\n   2. No, exit\n', ' ✻ Welcome to Claude Code!\n\n > \n   ? for shortcuts'].map(trustDialogOf),
-    [{ cursor: 'no' }, { cursor: 'yes' }, { cursor: 'yes' }, undefined],
+    [
+      dialog('no'),
+      dialog('yes'),
+      ' Do you trust the files in this folder?\n\n ❯ 1. Yes, proceed\n   2. No, exit\n',
+      agyDialog,
+      ' ✻ Welcome to Claude Code!\n\n > \n   ? for shortcuts',
+      ' > add autotrust this folder in agy\n\n ? for shortcuts',
+    ].map(trustDialogOf),
+    [{ cursor: 'no' }, { cursor: 'yes' }, { cursor: 'yes' }, { cursor: 'yes' }, undefined, undefined],
   );
 });
 
