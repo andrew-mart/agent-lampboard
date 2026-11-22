@@ -212,8 +212,9 @@ test('dialogCard_Should_AnswerWithArrowsAndEnter_BesidePreviews', async () => {
 });
 
 // What Codex asks shows under its name, and an answer goes as Codex picks: the arrows from the option under its cursor
-// to the one picked, then Enter
-test('dialogCard_Should_ShowWhatCodexAsks_AndPickWithArrows', async () => {
+// to the one picked, then Enter — or, for its "Other" choice, the arrows to it (which open its text field), the words,
+// then Enter
+test('dialogCard_Should_ShowWhatCodexAsks_AndPickWithArrows_OrAnswerInOwnWords', async () => {
   /** @type {import('../public/model/dialog.js').DialogStep[][]} */
   const answers = [];
   const card = createDialogCard({
@@ -224,20 +225,37 @@ test('dialogCard_Should_ShowWhatCodexAsks_AndPickWithArrows', async () => {
     },
   });
   card.show({
-    lines: ['Trust this folder?'],
+    lines: ['👉 Оставить исходные файлы на ПК?'],
     options: [
-      { key: '1', label: 'Trust and continue', detail: undefined, checked: undefined, current: true },
-      { key: '2', label: 'Quit', detail: undefined, checked: undefined, current: false },
+      { key: '1', label: 'Оставить исходники на ПК', detail: undefined, checked: undefined, current: true },
+      { key: '2', label: 'Удалить после проверки переноса', detail: undefined, checked: undefined, current: false },
+      { key: '3', label: 'Other', detail: undefined, checked: undefined, current: false },
     ],
     tabs: false,
     previews: true,
   });
-  const quit = [...card.element.querySelectorAll('button')].find((button) => button.textContent?.includes('Quit'));
-  assert.ok(quit);
-  quit.click();
+  const remove = [...card.element.querySelectorAll('button')].find((button) => button.textContent?.includes('Удалить'));
+  assert.ok(remove);
+  remove.click();
+  await settled();
+  const own = card.element.querySelector('input');
+  assert.ok(own instanceof window.HTMLInputElement);
+  own.value = 'Оставить и сверить';
+  const submit = [...card.element.querySelectorAll('button')].find((button) => button.textContent === 'Answer');
+  assert.ok(submit);
+  submit.click();
   await settled();
 
-  assert.deepEqual({ head: card.element.querySelector('.dialog-card-asker')?.textContent, answers }, { head: 'Codex asks', answers: [[{ key: 'down' }, { key: 'enter' }]] });
+  assert.deepEqual(
+    { head: card.element.querySelector('.dialog-card-asker')?.textContent, answers },
+    {
+      head: 'Codex asks',
+      answers: [
+        [{ key: 'down' }, { key: 'enter' }],
+        [{ key: 'down' }, { key: 'down' }, { text: 'Оставить и сверить' }, { key: 'enter' }],
+      ],
+    },
+  );
 });
 
 /** /mcp's screens as the terminal draws them, under its edge in the prompt box's place. @param {readonly string[]} lines */
@@ -285,8 +303,10 @@ test('agyMcpActions_Should_PickAnActionWithSidewaysArrowsAndEnter_AndGoBackToThe
 });
 
 // agy's question of several answers: a click on one ticks it or takes its tick off — the arrows go to it, Space ticks
-// it — and the card's button does what Enter does there, sending the answers ticked; the viewer takes Space as a key
-test('agyQuestionOfSeveralAnswers_Should_TickAnswersWithSpace_AndSendThemWithEnter', async () => {
+// it — and the card's button does what Enter does there, sending the answers ticked; "Write-in..." opens a line of
+// one's own words — the arrows to it, Enter to open "Your answer:", the words, Enter to send — or, once "Your answer:"
+// is already open in the terminal, sends the words and Enter straight in
+test('agyQuestionOfSeveralAnswers_Should_TickAnswersWithSpace_SendThemWithEnter_AndAnswerWriteIn', async () => {
   const { card, answers, press } = cardAboveBox();
   const screen = ['Question', '─'.repeat(60), '', 'Question 2/2: How are the pictures made?', '', '> 1. [ ] By a script', '  2. [x] By hand', '  3. Write-in...', '', '  ↑/↓ Navigate · ← Back · space Toggle · enter Submit All · esc Skip', 'esc to cancel'].join('\n');
   card.show(parseDialog(agyDialog(screen)));
@@ -295,11 +315,31 @@ test('agyQuestionOfSeveralAnswers_Should_TickAnswersWithSpace_AndSendThemWithEnt
     press(name);
     await settled();
   }
+  const own = card.element.querySelector('input');
+  assert.ok(own instanceof window.HTMLInputElement);
+  own.value = 'Both ways';
+  press('Answer');
+  await settled();
+  const openedWriteIn = ['Question', '─'.repeat(60), '', 'Question 2/2: How are the pictures made?', '', '  1. [ ] By a script', '  2. [x] By hand', '> 3. Write-in...', '', '  Your answer:', '  ', '', '  enter Submit All · esc Back', 'esc to cancel'].join('\n');
+  card.show(parseDialog(agyDialog(openedWriteIn)));
+  const openedInput = card.element.querySelector('input');
+  assert.ok(openedInput instanceof window.HTMLInputElement);
+  openedInput.value = 'From fixtures';
+  press('Answer');
+  await settled();
+  press('Back (Esc)');
+  await settled();
 
-  assert.deepEqual({ marks, answers, taken: parseSteps(answers[0]) }, {
-    marks: ['☐ By a script', '☑ By hand', 'Write-in...'],
-    answers: [[{ key: 'down' }, { key: 'space' }], [{ key: 'enter' }]],
-    taken: [{ key: 'down' }, { key: 'space' }],
+  assert.deepEqual({ marks, answers, taken: parseSteps(answers[2]) }, {
+    marks: ['☐ By a script', '☑ By hand'],
+    answers: [
+      [{ key: 'down' }, { key: 'space' }],
+      [{ key: 'enter' }],
+      [{ key: 'down' }, { key: 'down' }, { key: 'enter' }, { text: 'Both ways' }, { key: 'enter' }],
+      [{ text: 'From fixtures' }, { key: 'enter' }],
+      [{ key: 'esc' }],
+    ],
+    taken: [{ key: 'down' }, { key: 'down' }, { key: 'enter' }, { text: 'Both ways' }, { key: 'enter' }],
   });
 });
 

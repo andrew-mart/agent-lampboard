@@ -144,3 +144,12 @@ test('codexReading_Should_KeepSubagentsSession_ThroughParentsCopiedIn', () => {
 
   assert.deepEqual({ sessionId: record?.sessionId, entrypoint: record?.entrypoint }, { sessionId: '01a0a5e2-92d3-79d2-b64c-6c1c954e232f', entrypoint: 'sdk-codex' });
 });
+
+// An answer to a question Codex asked while working is written to its rollout as <send_user_message_question_reply>
+// JSON: it reads as Codex shows it in its terminal — "↪ Re: <question>" and the answer under it
+test('codexReading_Should_TellQuestionReplyAsReQuestionAndAnswer', () => {
+  const reply = '<send_user_message_question_reply>\n[{"answer":"Оставить исходники на ПК","question":"👉 Оставить исходные файлы на ПК?","questionItemId":"[\\"request_user_input_async\\",\\"call_1\\",0]"}]\n</send_user_message_question_reply>';
+  const [record] = read([meta, message(2, 'user', reply)]);
+
+  assert.deepEqual(record?.message, { role: 'user', content: '↪ Re: 👉 Оставить исходные файлы на ПК?\n\nОставить исходники на ПК' });
+});

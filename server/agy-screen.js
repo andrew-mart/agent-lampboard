@@ -18,6 +18,8 @@ const rule = /^\s*─{3,}\s*$/;
  * answers ticked — "Submit All" (agy 1.5.8).
  */
 const askingKeys = /Navigate · (?:tab Amend|(?:[^·]+ · )*enter [^·]+ · esc Skip|enter Confirm)/;
+/** The key row under a question's Write-in box, once Enter on "Write-in..." has opened "Your answer:". */
+const writeInKeys = /^\s*enter Submit(?: All)? · esc Back\s*$/;
 /** A question of several answers: Space ticks one, Enter does what the row names. */
 const tickingKeys = /space Toggle · enter ([^·]+?)\s*·/;
 /** An answer's box, ticked or not, ahead of its words. */
@@ -41,7 +43,7 @@ const action = /^(\[)?(\p{L}[\p{L} -]*?)\]?$/u;
 export function agyInputBox(screen) {
   const lines = screen.split('\n');
   // a panel under the box takes the keys: the box is on the screen, out of reach
-  if (lines.some((line) => askingKeys.test(line) || panelKeys.test(line))) return undefined;
+  if (lines.some((line) => askingKeys.test(line) || writeInKeys.test(line) || panelKeys.test(line))) return undefined;
   // the box is under a rule and over the next one, only the typed text between them — its first line opened by ">", the
   // rest indented: a message sent stays on the screen drawn as the box was, agy's own lines after it; the slash menu's
   // rows under the box are opened by ">" as well
@@ -62,9 +64,10 @@ export function agyInputBox(screen) {
  */
 export function agyDialog(screen) {
   const lines = screen.split('\n');
-  const keys = lines.findLastIndex((line) => askingKeys.test(line));
+  const keys = lines.findLastIndex((line) => askingKeys.test(line) || writeInKeys.test(line));
   const chosen = lines.findLastIndex((line, at) => at < keys && cursorRow.test(line));
   if (keys === -1 || chosen === -1) return mcpPanel(lines) ?? rewindPanel(screen) ?? modelPanel(lines);
+  const writingIn = writeInKeys.test(lines[keys] ?? '');
   const column = (cursorRow.exec(lines[chosen] ?? '')?.[1] ?? '').length;
   /** @param {string | undefined} line */
   const indentOf = (line) => (line === undefined ? 0 : line.length - line.trimStart().length);
@@ -99,6 +102,7 @@ export function agyDialog(screen) {
   const ruleAbove = lines.findLastIndex((line, at) => at < first && rule.test(line));
   const top = ruleAbove !== -1 ? ruleAbove : lines.findLastIndex((line, at) => at < first - 1 && line.trim() === '');
   const said = lines.slice(top + 1, first).map((line) => line.trim()).filter((line) => line !== '');
+  if (writingIn) return { lines: said, options: [{ key: '', label: 'Type your answer', detail: undefined, checked: undefined, current: true }], tabs: false, previews: true, goesBack: true };
   return { lines: said, options, tabs: betweenQuestions.test(lines[keys] ?? ''), previews: true, ...(ticking === undefined ? {} : { toggles: { enter: ticking } }) };
 }
 

@@ -14,7 +14,7 @@ import { driveBtw, readBtw, withPanelClosed } from './btw.js';
 import { inputBox, plainScreen, settleOn, settleWhileChanging, settleWithin, squash } from './claude-screen.js';
 import { driveCodexBtw } from './codex-btw.js';
 import { driveCodexRewind } from './codex-rewind.js';
-import { codexDialog, codexInputBox, codexQueued, showsSideConversation, showsSubagent } from './codex-screen.js';
+import { codexDialog, codexInputBox, codexQueued, showsQueuedQuestion, showsSideConversation, showsSubagent } from './codex-screen.js';
 import { choiceDialog } from './dialog.js';
 import { claudePaneIds, foregroundPids, succeeded, toTerminalInput } from './herdr.js';
 import { latestRecords, processKey } from './registry.js';
@@ -425,6 +425,24 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
     };
   }
 
+  /**
+   * Codex's screen with a queued question opened — shift+← while its box is empty and no queued message stands ahead
+   * of the question — so the page sees the question and its choices as a dialog. Left as it is while another turn types
+   * in the terminal.
+   * @param {string} sessionId
+   * @param {Place} place
+   * @param {string | undefined} screen
+   * @returns {Promise<string | undefined>}
+   */
+  async function withCodexQuestionOpen(sessionId, place, screen) {
+    if (place.agent !== 'codex' || screen === undefined || !showsQueuedQuestion(screen) || turns.has(sessionId)) return screen;
+    return inTurn(sessionId, async () => {
+      const terminal = terminalOf(place);
+      if (!(await terminal.keys('shift+left'))) return screen;
+      return (await settleWithin(terminal, (ms) => delay(ms), (after) => codexDialog(after) !== undefined, enterLooks)) ?? (await terminal.read()) ?? screen;
+    });
+  }
+
   return {
     /**
      * @param {string} sessionId
@@ -438,7 +456,7 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
           return { state: where.kind };
         case 'live': {
           const { place } = where;
-          const screen = await terminalOf(place).read();
+          const screen = await withCodexQuestionOpen(sessionId, place, await terminalOf(place).read());
           // Codex's terminal showing a sub-agent's thread, or a side conversation, is not where a prompt goes: the page
           // waits for the main thread
           const status = place.agent !== 'codex' || screen === undefined ? place.status : showsSubagent(screen) ? 'subagent' : showsSideConversation(screen) ? 'side' : place.status;
@@ -558,7 +576,7 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
         if (screen === undefined || dialog === undefined || dialogPrint(dialog) !== shown) return { ok: false, error: 'no-dialog' };
         const putBackBy = where.place.agent === 'claude' ? messagePutBackBy(screen, steps) : undefined;
         for (const step of steps) {
-          const done = 'key' in step ? await terminal.keys(step.key) : await terminal.text(step.text);
+          const done = 'key' in step ? await terminal.keys(step.key) : (await press(where.place, [[textCommand(where.place.agent), step.text]])).ok;
           if (!done) return { ok: false, error: 'send-failed' };
           // a digit opens "Type something" for the words that follow: the dialog redraws first
           await delay(answerStepMs);

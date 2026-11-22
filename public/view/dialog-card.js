@@ -7,8 +7,8 @@ import { dialogPrint } from '../model/dialog.js';
 import { h } from './dom.js';
 import { icon } from './icons.js';
 
-/** The choice Claude Code's dialog opens a line of words with. */
-const ownWords = /^Type something/;
+/** The choice a dialog opens a line of one's own words with: Claude Code's, Codex's, agy's. */
+const ownWords = /^(?:Type something|Type your answer$|Other(?:\s*\(write an answer\))?$|Write-in\.\.\.$)/;
 
 /**
  * @param {{ asker: string, answer: (steps: readonly import('../model/dialog.js').DialogStep[], shown: string) => Promise<import('../model/dialog.js').DialogReply> }} actions —
@@ -126,7 +126,7 @@ export function createDialogCard({ asker, answer }) {
     const submit = () => {
       const text = words.value.replace(/\s+/g, ' ').trim();
       if (text === '') return;
-      send(option.checked === undefined ? [{ key: digitOf(option.key) }, { text }, { key: 'enter' }] : [...arrowsTo(dialog, option), { text }, { key: 'up' }]);
+      send(ownSteps(dialog, option, text));
     };
     go.addEventListener('click', submit);
     words.addEventListener('keydown', (event) => {
@@ -206,6 +206,23 @@ function digitOf(key) {
  */
 function walkTo(dialog, option) {
   return [...arrowsTo(dialog, option), { key: dialog.sessionOnly === true ? 's' : 'enter' }];
+}
+
+/**
+ * The keys and words that answer a question in one's own words: in a question with several answers the arrows to "Type
+ * something", the words, which tick it, and ↑ off it; in agy's "Write-in..." the arrows to it, Enter to open "Your
+ * answer:", the words, Enter; in Codex's — or agy's "Your answer:" already open — the arrows to it, the words, Enter; in
+ * Claude Code's single-answer question the choice's digit, the words, Enter.
+ * @param {import('../model/dialog.js').Dialog} dialog
+ * @param {import('../model/dialog.js').DialogOption} option
+ * @param {string} text
+ * @returns {import('../model/dialog.js').DialogStep[]}
+ */
+function ownSteps(dialog, option, text) {
+  if (option.checked !== undefined) return [...arrowsTo(dialog, option), { text }, { key: 'up' }];
+  if (option.label === 'Write-in...') return [...arrowsTo(dialog, option), { key: 'enter' }, { text }, { key: 'enter' }];
+  if (dialog.previews) return [...arrowsTo(dialog, option), { text }, { key: 'enter' }];
+  return [{ key: digitOf(option.key) }, { text }, { key: 'enter' }];
 }
 
 /**

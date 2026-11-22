@@ -56,9 +56,13 @@ export function showsWorking(screen) {
 
 /** A line of the footer under Codex's prompt box: its status — how much of the context is used — or its shortcuts. */
 const boxFooter = /Context \d+% (?:used|left)|\? for shortcuts/;
+/** A line of the footer under a question Codex asks without choices: its own-words line is marked › as the box is. */
+const noOptionsFooter = /\bNo options · enter (?:submit|accept|queue) · esc skip\b/;
 
 /** An option of a picker: the chosen one marked ›, the others indented as far. */
 const optionLine = /^(›| ) (\d)\. (.+)$/;
+/** A line under an option, indented past its number: its description. */
+const detailLine = /^ {5}(\S.*)$/;
 
 /**
  * What Codex asks in its terminal, as the page answers it: the block of lines over its numbered options, and
@@ -71,22 +75,50 @@ export function codexDialog(screen) {
   if (codexInputBox(screen) !== undefined) return undefined;
   const lines = screen.split('\n');
   const chosen = lines.findLastIndex((line) => line.startsWith(`${promptMark}`) && optionLine.test(line));
-  if (chosen === -1) return undefined;
-  // the options around the chosen one, one line each
-  let first = chosen;
-  while (first > 0 && optionLine.test(lines[first - 1] ?? '')) first--;
-  let last = chosen;
-  while (last < lines.length - 1 && optionLine.test(lines[last + 1] ?? '')) last++;
-  const options = lines.slice(first, last + 1).flatMap((line) => {
-    const [, mark, key, label] = optionLine.exec(line) ?? [];
-    return key === undefined || label === undefined ? [] : [{ key, label: label.trim(), detail: undefined, checked: undefined, current: mark === '›' }];
-  });
+  const openEnded = chosen === -1 && lines.some((line) => noOptionsFooter.test(line)) ? lines.findLastIndex((line) => line.startsWith(promptMark)) : -1;
+  if (chosen === -1 && openEnded === -1) return undefined;
+  // the options around the chosen one, with any indented description lines under each
+  let first = chosen === -1 ? openEnded : chosen;
+  while (first > 0) {
+    if (optionLine.test(lines[first - 1] ?? '')) first -= 1;
+    else if (detailLine.test(lines[first - 1] ?? '')) {
+      let above = first - 1;
+      while (above > 0 && detailLine.test(lines[above - 1] ?? '')) above -= 1;
+      if (above > 0 && optionLine.test(lines[above - 1] ?? '')) first = above - 1;
+      else break;
+    } else break;
+  }
+  let last = chosen === -1 ? openEnded : chosen;
+  while (chosen !== -1 && last < lines.length - 1 && (optionLine.test(lines[last + 1] ?? '') || detailLine.test(lines[last + 1] ?? ''))) last++;
+  const options =
+    chosen === -1
+      ? [{ key: '1', label: (lines[openEnded] ?? '').slice(promptMark.length).trim(), detail: undefined, checked: undefined, current: true }]
+      : optionsOf(lines.slice(first, last + 1));
   // the question: the block of lines over the options, a blank line or two between them
   let end = first;
   while (end > 0 && (lines[end - 1] ?? '').trim() === '') end--;
   let top = end;
   while (top > 0 && (lines[top - 1] ?? '').trim() !== '') top--;
-  return { lines: lines.slice(top, end).map((line) => line.trim()), options, tabs: false, previews: true };
+  const asked = lines.slice(top, end).map((line, index) => (index === 0 ? line.trim().replace(/\s{2,}\d+ of \d+$/, '') : line.trim()));
+  const tabs = lines.slice(last + 1).some((line) => /←\/→ to navigate questions/.test(line));
+  return { lines: asked, options, tabs, previews: true };
+}
+
+/**
+ * @param {readonly string[]} lines
+ * @returns {import('../public/model/dialog.js').DialogOption[]}
+ */
+function optionsOf(lines) {
+  /** @type {import('../public/model/dialog.js').DialogOption[]} */
+  const options = [];
+  for (const line of lines) {
+    const [, mark, key, label] = optionLine.exec(line) ?? [];
+    const [, detail] = detailLine.exec(line) ?? [];
+    const previous = options.at(-1);
+    if (key !== undefined && label !== undefined) options.push({ key, label: label.trim(), detail: undefined, checked: undefined, current: mark === '›' });
+    else if (detail !== undefined && previous !== undefined) options[options.length - 1] = { ...previous, detail: previous.detail === undefined ? detail.trim() : `${previous.detail} ${detail.trim()}` };
+  }
+  return options;
 }
 
 /**
@@ -100,9 +132,10 @@ export function codexInputBox(screen) {
   const top = lines.findLastIndex((line) => line.startsWith(promptMark));
   if (top === -1) return undefined;
   const end = lines.findIndex((line, index) => index > top && line.trim() === '');
+  const under = end === -1 ? [] : lines.slice(end);
   // a picker's chosen option is marked as the box is — "› 1. Update now" — a numbered list typed into the box too: the
-  // box has Codex's footer under it
-  if (/^\d+\. /.test(lines[top]?.slice(promptMark.length) ?? '') && !(end !== -1 && lines.slice(end).some((line) => boxFooter.test(line)))) return undefined;
+  // box has Codex's footer under it; an open-ended question's line has its own footer under it
+  if ((/^\d+\. /.test(lines[top]?.slice(promptMark.length) ?? '') && !under.some((line) => boxFooter.test(line))) || under.some((line) => noOptionsFooter.test(line))) return undefined;
   const box = lines.slice(top, end === -1 ? undefined : end);
   return box.map((line, index) => (index === 0 ? line.slice(promptMark.length) : line.replace(/^ {2}/, '')).trimEnd()).join('\n');
 }
@@ -140,4 +173,20 @@ export function codexQueued(screen) {
     else break;
   }
   return queued;
+}
+
+/** The placeholder in Codex's prompt box while nothing is typed there. */
+const boxPlaceholder = 'Ask Codex to do anything';
+
+/**
+ * Whether Codex holds a question in its queued follow-up inputs, ready to open with shift+←: its box is empty, and no
+ * queued message stands ahead of the question to take the key first.
+ * @param {string} screen
+ */
+export function showsQueuedQuestion(screen) {
+  const { lines, top } = aroundBox(screen);
+  if (top === -1 || codexInputBox(screen) !== boxPlaceholder) return false;
+  const over = lines.slice(Math.max(0, top - overBox), top);
+  const header = over.findLastIndex((line) => line.startsWith('• Queued follow-up inputs'));
+  return header !== -1 && over.slice(header + 1).some((line) => /\bshift\+← to answer\s*$/.test(line));
 }

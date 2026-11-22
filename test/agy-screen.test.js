@@ -130,6 +130,42 @@ test('agyDialog_Should_ReadQuestionOfSeveralAnswers_TickedWithSpace_LongChoicesW
   });
 });
 
+// Once Enter on "Write-in..." has opened "Your answer:" in agy's terminal, the dialog stays on the page as an answer of
+// one's own — Enter submits it, Esc goes back to the choices — and the prompt box takes no keys meanwhile
+test('agyDialog_Should_ReadOpenedWriteInBox_AsOwnWordsDialogWithBack', () => {
+  const writeIn = screenOf([
+    'Question',
+    rule,
+    '',
+    'Question 1/1: What is the destination of this map?',
+    '',
+    '  1. (Recommended) Compare surgery and conservative protocol',
+    'with clear criteria',
+    '  2. Choose a surgeon right away',
+    '> 3. Write-in...',
+    '',
+    '  Your answer:',
+    '  ',
+    '',
+    '  enter Submit · esc Back',
+    'esc to cancel',
+  ]);
+
+  assert.deepEqual(
+    { box: agyInputBox(writeIn), dialog: agyDialog(writeIn) },
+    {
+      box: undefined,
+      dialog: {
+        lines: ['Question 1/1: What is the destination of this map?'],
+        options: [{ key: '', label: 'Type your answer', detail: undefined, checked: undefined, current: true }],
+        tabs: false,
+        previews: true,
+        goesBack: true,
+      },
+    },
+  );
+});
+
 /** agy's /mcp, drawn under its prompt box — still on the screen, keys going to the panel — over its keys' row. */
 const mcpPanel = (/** @type {readonly string[]} */ lines, /** @type {string} */ keys) =>
   screenOf([rule, '>', rule, 'MCP Servers', 'Plugins (~/.gemini/config/plugins)', ...lines, keys, `${' '.repeat(40)}Gemini 4 Argon · high`]);

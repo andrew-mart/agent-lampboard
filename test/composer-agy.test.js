@@ -156,6 +156,30 @@ test('liveState_answer_And_send_Should_ShowAgysMcpServers_AnswerThemWithKeys_And
   );
 });
 
+// An answer of one's own to an agy question — its "Write-in..." opened with Enter, the words, Enter — pastes the words
+// into "Your answer:" as a prompt is pasted into agy's box, so Enter does not come before the words finish arriving
+test('answer_Should_PasteOwnWordsIntoAgysWriteInQuestion', async () => {
+  const herdr = fakeHerdr({ panel: ['Question', rule, '', 'Question 1/1: Which page?', '', '> 1. Catalog', '  2. Write-in...', '', '  ↑/↓ Navigate · enter Submit · esc Skip', 'esc to cancel'] });
+  const composer = composerOf({ found: 'pane', pane: 'w2:p1', working: false }, herdr);
+
+  const live = await composer.liveState(conversation);
+  const dialog = live.state === 'live' ? live.dialog : undefined;
+  const answered = await composer.answer(
+    conversation,
+    [{ key: 'down' }, { key: 'enter' }, { text: 'The checkout summary' }, { key: 'enter' }],
+    dialog === undefined ? '' : dialogPrint(dialog),
+    async () => [],
+  );
+
+  assert.deepEqual(
+    { answered, typed: herdr.changes },
+    {
+      answered: { ok: true },
+      typed: ['send-keys w2:p1 down', 'send-keys w2:p1 enter', 'paste-text w2:p1 The checkout summary', 'send-keys w2:p1 enter'],
+    },
+  );
+});
+
 // While agy asks something — a permission, a question — a prompt is not typed: its keys would answer it. agy has no
 // side question the viewer drives, and rewinds its conversation only with the files changed since: nothing is typed for
 // a side question, nor for the conversation rewound alone

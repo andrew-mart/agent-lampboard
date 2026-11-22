@@ -286,3 +286,41 @@ test('liveState_Should_TellWhatCodexQueued', async () => {
 
   assert.deepEqual(live, { state: 'live', status: 'busy', pane: 'w4:p1', dialog: undefined, queued: ['Then update the docs.'] });
 });
+
+// A question Codex asked while working waits in its queued follow-up inputs ("? 1 question / shift+← to answer") until
+// shift+← opens it: liveState opens it so the page gets the dialog and answers it
+test('liveState_Should_OpenCodexsQueuedQuestionWithShiftLeft_ForThePageToAnswer', async () => {
+  let opened = false;
+  /** @type {string[]} */
+  const changes = [];
+  const waiting = ['• Waiting for background terminal (32m 38s • esc to interrupt)', '', '• Queued follow-up inputs', '  ? 1 question', '  shift+← to answer', '', '› Ask Codex to do anything', ...footer].join('\n');
+  const question = ['• Waiting for background terminal (32m 38s • esc to interrupt)', '', '👉 Оставить исходные файлы на ПК?                                   1 of 1', '', '› 1. Оставить исходники на ПК', '  2. Удалить после проверки переноса', '  3. Other', '', 'option 1/3 · enter submit · esc skip · shift+→ main prompt'].join('\n');
+  const herdr = {
+    changes,
+    /** @param {readonly string[]} args @returns {Promise<import('../server/composer.js').HerdrReply>} */
+    run: async (args) => {
+      const [, command, pane] = args;
+      const keys = args.slice(3);
+      if (command === 'list') return { ok: true, json: { result: { panes: [{ agent: 'codex', pane_id: 'w4:p1' }] } }, text: '' };
+      if (command === 'read') return { ok: true, json: undefined, text: opened ? question : waiting };
+      if (keys.includes('shift+left')) opened = true;
+      changes.push(`${command} ${pane} ${keys.join(' ')}`);
+      return { ok: true, json: { result: { type: 'ok' } }, text: '' };
+    },
+  };
+  const composer = createComposer({ readRecords: async () => [], herdr: herdr.run, codexPlace: async () => ({ found: 'pane', pane: 'w4:p1', working: true }) });
+
+  const live = await composer.liveState(thread);
+  const dialog = live.state === 'live' ? live.dialog : undefined;
+  const answered = await composer.answer(thread, [{ key: 'down' }, { key: 'enter' }], dialog === undefined ? '' : dialogPrint(dialog), async () => []);
+
+  assert.deepEqual(
+    { question: dialog?.lines, options: dialog?.options.map((option) => option.label), answered, changes },
+    {
+      question: ['👉 Оставить исходные файлы на ПК?'],
+      options: ['Оставить исходники на ПК', 'Удалить после проверки переноса', 'Other'],
+      answered: { ok: true },
+      changes: ['send-keys w4:p1 shift+left', 'send-keys w4:p1 down', 'send-keys w4:p1 enter'],
+    },
+  );
+});

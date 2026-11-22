@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { codexDialog, codexInputBox, codexQueued, showsSideConversation, showsSubagent, showsWorking } from '../server/codex-screen.js';
+import { codexDialog, codexInputBox, codexQueued, showsQueuedQuestion, showsSideConversation, showsSubagent, showsWorking } from '../server/codex-screen.js';
 
 const footer = ['', '  D:\\gits\\shop · main · No changes · GPT-6-Astra xhigh · 411K used · Context 42% used', '  ← for agents · ? for shortcuts'];
 
@@ -90,4 +90,88 @@ test('codexQueued_Should_ReadFollowUpInputsCodexQueued', () => {
   ].join('\n');
 
   assert.deepEqual([codexQueued(queued), codexQueued(queued.replace('• Queued follow-up inputs', '• Ran ls'))], [['Then reply with the single word queued.', 'And cover it with a test that sends a hundred requests'], []]);
+});
+
+// A question Codex asks while it works — or with descriptions under its options, or with no options at all — is read as
+// a dialog: the counter at the top right of the question's first line left off, each option's indented description kept
+// with it, and ←/→ between several questions told from its footer; its free-text line is no prompt box
+test('codexDialog_Should_ReadAsyncAndDetailedQuestions_AndOpenEndedQuestionAsDialog_NotPromptBox', () => {
+  const asyncQuestion = [
+    '• Waiting for background terminal (32m 38s • esc to interrupt)',
+    '',
+    '👉 После успешного импорта музыки оставить исходные файлы           1 of 1',
+    'на ПК или удалить проверенные?',
+    '',
+    '› 1. Оставить исходники на ПК',
+    '  2. Удалить после проверки переноса',
+    '  3. Other',
+    '',
+    'option 1/3 · enter submit · esc skip · shift+→ main prompt',
+  ].join('\n');
+  const detailed = [
+    'Question 1/2 (2 unanswered)',
+    'Which path should we use?',
+    '',
+    '  1. Fast path',
+    '     Skip validation and write directly.',
+    '› 2. Safe path',
+    '     Validate every file before moving.',
+    '',
+    'enter to submit answer · ←/→ to navigate questions · esc to interrupt',
+  ].join('\n');
+  const openEnded = [
+    'What should we name the playlist?                                   1 of 1',
+    '',
+    '› Type your answer',
+    '',
+    'No options · enter submit · esc skip · shift+→ main prompt',
+  ].join('\n');
+
+  assert.deepEqual(
+    {
+      boxes: [codexInputBox(asyncQuestion), codexInputBox(detailed), codexInputBox(openEnded)],
+      dialogs: [codexDialog(asyncQuestion), codexDialog(detailed), codexDialog(openEnded)],
+    },
+    {
+      boxes: [undefined, undefined, undefined],
+      dialogs: [
+        {
+          lines: ['👉 После успешного импорта музыки оставить исходные файлы', 'на ПК или удалить проверенные?'],
+          options: [
+            { key: '1', label: 'Оставить исходники на ПК', detail: undefined, checked: undefined, current: true },
+            { key: '2', label: 'Удалить после проверки переноса', detail: undefined, checked: undefined, current: false },
+            { key: '3', label: 'Other', detail: undefined, checked: undefined, current: false },
+          ],
+          tabs: false,
+          previews: true,
+        },
+        {
+          lines: ['Question 1/2 (2 unanswered)', 'Which path should we use?'],
+          options: [
+            { key: '1', label: 'Fast path', detail: 'Skip validation and write directly.', checked: undefined, current: false },
+            { key: '2', label: 'Safe path', detail: 'Validate every file before moving.', checked: undefined, current: true },
+          ],
+          tabs: true,
+          previews: true,
+        },
+        {
+          lines: ['What should we name the playlist?'],
+          options: [{ key: '1', label: 'Type your answer', detail: undefined, checked: undefined, current: true }],
+          tabs: false,
+          previews: true,
+        },
+      ],
+    },
+  );
+});
+
+// A question waiting in Codex's queued follow-up inputs — "? 1 question / shift+← to answer" over an empty prompt box —
+// is ready for shift+← to open; not while a queued message stands ahead of it or text is typed in the box
+test('showsQueuedQuestion_Should_TellWhenQueuedQuestionWaitsForShiftLeftOverEmptyBox', () => {
+  const ready = ['• Working (12s • esc to interrupt)', '', '• Queued follow-up inputs', '  ? 1 question', '  shift+← to answer', '', '› Ask Codex to do anything', ...footer].join('\n');
+  const countdown = ['• Queued follow-up inputs', '  ? 2 questions', '  18s · shift+← to answer', '', '› Ask Codex to do anything', ...footer].join('\n');
+  const behindMessage = ['• Queued follow-up inputs', '  ↳ Then update the docs.', '    shift+← edit last queued message', '  ? 1 question', '', '› Ask Codex to do anything', ...footer].join('\n');
+  const draftInBox = ['• Queued follow-up inputs', '  ? 1 question', '  shift+← to answer', '', '› Wait a second', ...footer].join('\n');
+
+  assert.deepEqual([ready, countdown, behindMessage, draftInBox].map(showsQueuedQuestion), [true, true, false, false]);
 });

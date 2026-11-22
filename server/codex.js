@@ -137,7 +137,7 @@ function questionBlocks(args) {
  */
 function messageOf(payload, uuid, model) {
   if (payload.role === 'user') {
-    const said = partsOf(payload.content, 'input_text').join('\n');
+    const said = questionReply(partsOf(payload.content, 'input_text').join('\n'));
     if (said === '') return [];
     const context = contextMarks.some((mark) => said.startsWith(mark));
     return [{ type: 'user', uuid, ...(context ? { isMeta: /** @type {const} */ (true) } : {}), message: { role: 'user', content: said } }];
@@ -147,6 +147,29 @@ function messageOf(payload, uuid, model) {
     return said === '' ? [] : [{ type: 'assistant', uuid, message: { ...idOf(payload), role: 'assistant', ...modelOf(model), content: [{ type: 'text', text: said }] } }];
   }
   return [];
+}
+
+/**
+ * An answer to Codex's question, written to its rollout as <send_user_message_question_reply>[…]</send_user_message_question_reply>,
+ * as Codex shows it in its conversation: "↪ Re: <question>" and the answer under it; any other message as it is.
+ * @param {string} said
+ * @returns {string}
+ */
+function questionReply(said) {
+  const match = /^<send_user_message_question_reply>\s*([\s\S]*?)\s*<\/send_user_message_question_reply>$/.exec(said.trim());
+  if (match === null) return said;
+  try {
+    const parsed = JSON.parse(match[1] ?? '');
+    const items = Array.isArray(parsed) ? parsed : isRecord(parsed) && Array.isArray(parsed.answers) ? parsed.answers : [];
+    const replies = items.filter(isRecord).flatMap((item) => {
+      const question = text(item.question);
+      const answer = text(item.answer);
+      return answer === undefined ? [] : [question === undefined ? answer : `↪ Re: ${question}\n\n${answer}`];
+    });
+    return replies.length > 0 ? replies.join('\n\n') : said;
+  } catch {
+    return said;
+  }
 }
 
 /**
