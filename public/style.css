@@ -1930,11 +1930,7 @@ input.herdr-row-name.failed {
   height: 18px;
 }
 
-/* A herdr pane's terminal: dark, as terminal programs draw for. Its top row — the sidebar's button — on a phone only. */
-.terminal-top {
-  display: none;
-}
-
+/* A herdr pane's terminal: dark, as terminal programs draw for. */
 .terminal-pane {
   display: flex;
   flex: 1;
@@ -2380,7 +2376,7 @@ input.herdr-row-name.failed {
 }
 
 .head-group + .head-group::before,
-.status + .head-group::before,
+.status:not([hidden]) + .head-group::before,
 .head-tools::before {
   content: "";
   flex: none;
@@ -13338,20 +13334,6 @@ a.file-link:hover {
     display: inline-grid;
   }
 
-  .terminal-top {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: calc(6px + env(safe-area-inset-top)) 10px 6px;
-  }
-
-  .terminal-title {
-    overflow: hidden;
-    font-size: 14px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .head-actions [data-setting="outline"] {
     display: none;
   }
@@ -13391,6 +13373,11 @@ a.file-link:hover {
   .fact-cost,
   .fact-model .fact-dim {
     display: none;
+  }
+
+  /* A terminal's header has no model, context or cost chips, so its folder stays in view on a phone. */
+  .pane-head .fact-folder {
+    display: inline-flex;
   }
 
   .fact-branch {

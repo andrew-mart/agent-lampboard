@@ -17,7 +17,7 @@ window.matchMedia = (/** @type {string} */ query) =>
       removeEventListener: (/** @type {string} */ _, /** @type {(event: { matches: boolean }) => void} */ listener) => void screenListeners.splice(screenListeners.indexOf(listener), 1),
     })
   );
-const { createSessionHeader } = await import('../public/view/session-header.js');
+const { createPaneHeader, createSessionHeader } = await import('../public/view/session-header.js');
 
 /**
  * A session's header, with no folder or branch known yet and nothing around it.
@@ -197,4 +197,97 @@ test('sessionHeader_Should_AskForTheBranchAtOnce_WhenPoked', async () => {
   header.dispose();
 
   assert.deepEqual({ atStart, poked }, { atStart: 1, poked: 2 });
+});
+
+// Over a pane's terminal the header shows its name, folder, git branch and agent status — hiding status for a plain
+// shell, poking for the branch once the folder becomes known or changes — keeps custom detail rows at the end, and
+// folds navigation buttons into the view menu on a narrow screen just as a session's header does
+test('paneHeader_Should_ShowTitleFolderBranchStatusAndDetails_AndFoldToolsOnNarrowScreen', async (t) => {
+  screen.narrow = false;
+  /** @param {string} name */
+  const button = (name) => {
+    const made = window.document.createElement('button');
+    made.dataset.name = name;
+    return made;
+  };
+  const history = button('history');
+  const files = button('files');
+  const vscode = button('vscode');
+  const nav = window.document.createElement('span');
+  nav.append(history, files);
+  const systemRow = window.document.createElement('div');
+  let branch = /** @type {string | undefined} */ (undefined);
+  let branchCalls = 0;
+  const header = createPaneHeader({
+    paneId: 'w2:p1',
+    title: 'w2:p1',
+    folder: undefined,
+    status: 'unknown',
+    currentBranch: async () => {
+      branchCalls += 1;
+      return branch;
+    },
+    leading: window.document.createElement('div'),
+    navigation: [nav],
+    folds: [history],
+    tools: [],
+    rare: [],
+    rareOpeners: [vscode],
+    details: [systemRow],
+  });
+  t.after(header.dispose);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const statusEl = header.element.querySelector('.status');
+  assert.ok(statusEl instanceof window.HTMLElement);
+  const initial = {
+    title: header.element.querySelector('.title')?.textContent,
+    statusHidden: statusEl.hidden,
+    facts: header.element.querySelector('.head-facts')?.textContent,
+    branchCalls,
+  };
+
+  branch = 'feat/terminal-head';
+  header.update({ title: 'web · shell', folder: 'D:\\dev\\shop', status: 'working' });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const afterUpdate = {
+    title: header.element.querySelector('.title')?.textContent,
+    docTitle: window.document.title,
+    statusHidden: statusEl.hidden,
+    statusKind: statusEl.dataset.status,
+    folderChip: header.element.querySelector('.fact-folder')?.textContent,
+    branchChip: header.element.querySelector('.fact-branch')?.textContent,
+    branchCalls,
+    detailsLastIsSystem: header.element.querySelector('.head-details')?.lastElementChild === systemRow,
+    detailsHasPane: (header.element.querySelector('.head-details')?.textContent ?? '').includes('w2:p1'),
+  };
+
+  header.update({ title: 'web · shell', folder: 'D:\\dev\\shop', status: 'done' });
+  const whenDone = { statusHidden: statusEl.hidden, statusKind: statusEl.dataset.status, branchCalls };
+
+  screen.narrow = true;
+  for (const listener of [...screenListeners]) listener({ matches: true });
+  const foldedInMenu = history.closest('.head-tools') !== null && files.closest('.head-tools') === null;
+  screen.narrow = false;
+  for (const listener of [...screenListeners]) listener({ matches: false });
+
+  assert.deepEqual(
+    { initial, afterUpdate, whenDone, foldedInMenu },
+    {
+      initial: { title: 'w2:p1', statusHidden: true, facts: 'w2:p1', branchCalls: 1 },
+      afterUpdate: {
+        title: 'web · shell',
+        docTitle: 'web · shell — Claude Code',
+        statusHidden: false,
+        statusKind: 'working',
+        folderChip: 'shop',
+        branchChip: 'feat/terminal-head',
+        branchCalls: 2,
+        detailsLastIsSystem: true,
+        detailsHasPane: true,
+      },
+      whenDone: { statusHidden: false, statusKind: 'idle', branchCalls: 2 },
+      foldedInMenu: true,
+    },
+  );
 });

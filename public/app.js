@@ -41,7 +41,7 @@ import { tintByWorkspace } from './view/workspace-tint.js';
 import { mountTerminal } from './view/terminal-view.js';
 import { openOfflineStore } from './view/offline-store.js';
 import { createRewindDialog } from './view/rewind-dialog.js';
-import { createSessionHeader } from './view/session-header.js';
+import { createPaneHeader, createSessionHeader } from './view/session-header.js';
 import { createTextSizeControl } from './view/text-size.js';
 import { createDocDock } from './view/doc-dock.js';
 import { rewindMessage } from './model/rewind.js';
@@ -623,7 +623,7 @@ function createPage() {
    * The herdr pane whose terminal the page shows (#/pane/<id>) instead of a session; sessionWhenOpened: the session in it
    * then — one Claude Code starts in it later takes the page to its feed.
    */
-  /** @type {{ id: string, terminal: ReturnType<typeof mountTerminal>, title: HTMLElement, sessionWhenOpened: string | undefined } | undefined} */
+  /** @type {{ id: string, terminal: ReturnType<typeof mountTerminal>, showHerdr: () => void, dispose: () => void, sessionWhenOpened: string | undefined } | undefined} */
   let currentPane;
   /**
    * The session following the active one switched to: its box does not take the focus — what the user was typing
@@ -637,13 +637,33 @@ function createPage() {
    */
   const paneSize = (paneId) => placeOf(herdrLayout, { kind: 'pane', id: paneId })?.tab.panes.find((pane) => pane.id === paneId)?.size;
   /**
-   * A pane's name for its terminal's top row: its workspace and tab, or its id until the page has heard from herdr.
+   * The folder of a pane's tab, as herdr tells it.
+   * @param {string} paneId
+   */
+  const paneFolder = (paneId) => placeOf(herdrLayout, { kind: 'pane', id: paneId })?.tab.folder;
+  /**
+   * The status of the agent in a pane, or 'unknown' for a plain terminal.
+   * @param {string} paneId
+   * @returns {import('./model/herdr.js').AgentStatus}
+   */
+  const paneStatus = (paneId) => {
+    const pane = placeOf(herdrLayout, { kind: 'pane', id: paneId })?.tab.panes.find((one) => one.id === paneId);
+    return pane?.agent === undefined ? 'unknown' : pane.status;
+  };
+  /**
+   * A pane's name for its terminal's header: its workspace and tab, or its id until the page has heard from herdr.
    * @param {string} paneId
    */
   const paneName = (paneId) => {
     const place = placeOf(herdrLayout, { kind: 'pane', id: paneId });
     return place === undefined ? paneId : `${place.workspace.label} · ${place.tab.label}`;
   };
+  /** The settings controls shown behind ⋯ in both session and terminal headers. */
+  const rareTools = () => [
+    createTextSizeControl({ label: 'Text size', size: () => settings.get('size'), choose: (size) => settings.set('size', size) }),
+    createTextSizeControl({ label: 'Note text size', size: () => settings.get('noteSize'), choose: (size) => settings.set('noteSize', size) }),
+    ...settings.rareButtons(),
+  ];
 
   /** @param {string} text — the search box text; following ignores it */
   const listed = (text) => listedSessions(sessions, { sdk: showSdk.checked ? 'shown' : 'hidden', search: text, workspaces: workspaces.of, history, closed: closedOnly.checked && workspaces.herdr ? 'only' : 'all' });
@@ -815,13 +835,48 @@ function createPage() {
     if (currentPane?.id === paneId) return;
     current?.putAway();
     current = undefined;
-    currentPane?.terminal.dispose();
+    currentPane?.dispose();
     const terminal = mountTerminal({ pane: paneId, size: paneSize(paneId) });
-    // On a phone the sidebar is a drawer: the terminal's top row opens it, as a session's header does.
-    const title = h('span', { className: 'terminal-title', text: paneName(paneId) });
-    const top = h('div', { className: 'terminal-top' }, [drawerButton('sessions', 'menu', 'Sessions'), title]);
-    showPaneParts(top, terminal.element);
-    currentPane = { id: paneId, terminal, title, sessionWhenOpened: paneSession(herdrLayout, paneId, undefined) };
+    /** @type {import('./model/herdr.js').Opened} */
+    const opened = { kind: 'pane', id: paneId };
+    const folder = () => paneFolder(paneId);
+    const herdrTab = herdrTabButtonFor(opened);
+    const keepLit = keepLitButtonFor(opened);
+    const system = createSystemRow({ page: window, read: readSystem, readProcesses, everyMs: systemEveryMs });
+    const [tabHistory, branchChanges, vscode, fileManager] = [historyButton(historyView), changesButton(opened), vscodeButton(folder), fileManagerButton(folder)];
+    const folds = [tabHistory, branchChanges, herdrTab.button, fileManager].map(labelled);
+    const navigation = [headGroup([tabHistory, branchChanges, filesButton(folder)]), headGroup([herdrTab.button, keepLit.button, fileManager])];
+    const header = createPaneHeader({
+      paneId,
+      title: paneName(paneId),
+      folder: folder(),
+      status: paneStatus(paneId),
+      currentBranch: () => fetchBranch(opened),
+      leading: drawerButton('sessions', 'menu', 'Sessions'),
+      navigation,
+      folds,
+      tools: settings.buttons(),
+      rare: rareTools(),
+      rareOpeners: [labelled(vscode)],
+      details: [system.row],
+    });
+    showPaneParts(header.element, terminal.element);
+    currentPane = {
+      id: paneId,
+      terminal,
+      showHerdr() {
+        herdrTab.show(herdrLayout);
+        keepLit.show(herdrLayout, keptPanes);
+        header.update({ title: paneName(paneId), folder: folder(), status: paneStatus(paneId) });
+      },
+      dispose() {
+        terminal.dispose();
+        header.dispose();
+        system.dispose();
+      },
+      sessionWhenOpened: paneSession(herdrLayout, paneId, undefined),
+    };
+    currentPane.showHerdr();
     renderList();
     redrawHistory();
     prepareBeside(() => currentPane?.id === paneId);
@@ -870,11 +925,12 @@ function createPage() {
   /**
    * A pane's terminal in the feeds' cell, where a session shows its feed — a swipe goes from it to the tab beside as from
    * a feed — the feeds kept parked under it.
-   * @param {HTMLElement} top — the terminal's top row
+   * @param {HTMLElement} headerElement — the terminal's header, in the same place as a session's
    * @param {HTMLElement} terminalElement
    */
-  const showPaneParts = (top, terminalElement) => {
-    main.replaceChildren(top, tabBar.element, mainBody);
+  const showPaneParts = (headerElement, terminalElement) => {
+    if (main.children[0] === tabBar.element && main.children[2] === mainBody) main.children[1]?.replaceWith(headerElement);
+    else main.replaceChildren(tabBar.element, headerElement, mainBody);
     for (const child of [...feedColumn.children]) if (!child.classList.contains('scroller')) child.remove();
     // on a phone the feed left stays laid out though unseen, as when a feed takes its place
     const besides = matchMedia('(max-width: 820px)').matches;
@@ -977,7 +1033,7 @@ function createPage() {
       return opened === undefined ? undefined : placeOf(herdrLayout, opened)?.tab.id;
     },
     title: () => {
-      const heading = main.querySelector('.session-head > .title, .terminal-top > .terminal-title');
+      const heading = main.querySelector('.session-head > .title');
       return heading instanceof HTMLElement ? heading : undefined;
     },
     titleBeside: (direction) => {
@@ -1092,7 +1148,7 @@ function createPage() {
   /** @param {string} id */
   const open = (id) => {
     if (current?.id === id) return;
-    currentPane?.terminal.dispose();
+    currentPane?.dispose();
     currentPane = undefined;
     current?.putAway();
     current = undefined;
@@ -1107,21 +1163,23 @@ function createPage() {
     const { scroller, view, bookmarks } = part;
     const tables = sessionTables(id, scroller, (change) => (current === undefined ? change() : current.keepPlace(change)));
     tables.apply();
-    const herdrTab = herdrTabButtonFor(id);
+    /** @type {import('./model/herdr.js').Opened} */
+    const opened = { kind: 'session', id };
+    const herdrTab = herdrTabButtonFor(opened);
     const restart = restartButtonFor(id, () => history[id]?.claudeGpt === true);
     // how hard Claude Code thinks in it: /effort typed into its terminal
     const effort = createEffortRow(id, { set: (level) => typeIntoSession(id, `/effort ${level}`) });
     // how busy the viewer's computer is, on a phone: the tabs' row there has no room for it
     const system = createSystemRow({ page: window, read: readSystem, readProcesses, everyMs: systemEveryMs });
-    const keepLit = keepLitButtonFor(id);
+    const keepLit = keepLitButtonFor(opened);
     const folder = () => sessions.find((session) => session.id === id)?.cwd;
     // from the conversation outward: the side panels of this conversation, its tab, its branch, its project; then where
     // the session runs and its folder lie, opened outside the page
     // those used less on a phone fold into the view menu there, with the words of what they do, for the title to have room
-    const [tabHistory, branchChanges, vscode, fileManager] = [historyButton(historyView), changesButton(id), vscodeButton(folder), fileManagerButton(folder)];
+    const [tabHistory, branchChanges, vscode, fileManager] = [historyButton(historyView), changesButton(opened), vscodeButton(folder), fileManagerButton(folder)];
     const folds = [tabHistory, branchChanges, herdrTab.button, fileManager].map(labelled);
     const navigation = [headGroup([drawerButton('outline', 'list', 'Outline'), tabHistory, branchChanges, filesButton(folder)]), headGroup([herdrTab.button, keepLit.button, fileManager])];
-    const header = createSessionHeader({ sessionId: id, place: info, currentBranch: () => fetchBranch(id), tables, leading: drawerButton('sessions', 'menu', 'Sessions'), navigation, folds, tools: settings.buttons(), rare: [createTextSizeControl({ label: 'Text size', size: () => settings.get('size'), choose: (size) => settings.set('size', size) }), createTextSizeControl({ label: 'Note text size', size: () => settings.get('noteSize'), choose: (size) => settings.set('noteSize', size) }), ...settings.rareButtons()], rareOpeners: [labelled(vscode)], details: [restart.row, effort.row, system.row] });
+    const header = createSessionHeader({ sessionId: id, place: info, currentBranch: () => fetchBranch(opened), tables, leading: drawerButton('sessions', 'menu', 'Sessions'), navigation, folds, tools: settings.buttons(), rare: rareTools(), rareOpeners: [labelled(vscode)], details: [restart.row, effort.row, system.row] });
     const outlineElement = h('aside', { className: 'outline', attrs: { 'aria-label': 'Outline' } });
     const outline = createOutline({
       element: outlineElement,
@@ -1627,11 +1685,11 @@ function createPage() {
       if (mode === 'herdr') herdrSidebar.render(lit, opened, search.value, seenAnswers.get());
       current?.showHerdr();
       tabBar.render(lit, opened, seenAnswers.get());
-      // A terminal opened before the page heard from herdr takes its pane's size and name now.
+      // A terminal opened before the page heard from herdr takes its pane's size, name, folder and buttons now.
       if (currentPane === undefined) return;
       const size = paneSize(currentPane.id);
       if (size !== undefined) currentPane.terminal.resize(size);
-      currentPane.title.textContent = paneName(currentPane.id);
+      currentPane.showHerdr();
     },
     /** What herdr shows now: its workspaces, tabs, panes and their agents' status. */
     async refreshHerdr() {
@@ -2153,12 +2211,20 @@ function createOfflineNotice() {
 }
 
 /**
- * The branch checked out in the session's folder now; undefined outside a repository or when the server does not say.
- * @param {string} sessionId
+ * Query parameter identifying what the page shows — a session or a herdr pane — for folder-scoped endpoints.
+ * @param {import('./model/herdr.js').Opened} opened
+ */
+function openedQuery(opened) {
+  return opened.kind === 'session' ? { session: opened.id } : { pane: opened.id };
+}
+
+/**
+ * The branch checked out in the session's or pane's folder now; undefined outside a repository or when the server does not say.
+ * @param {import('./model/herdr.js').Opened} opened
  * @returns {Promise<string | undefined>}
  */
-async function fetchBranch(sessionId) {
-  const response = await fetch(`/api/branch?session=${encodeURIComponent(sessionId)}`).catch(() => undefined);
+async function fetchBranch(opened) {
+  const response = await fetch(`/api/branch?${new URLSearchParams(openedQuery(opened))}`).catch(() => undefined);
   const json = response?.ok ? await response.json().catch(() => undefined) : undefined;
   return isRecord(json) ? text(json.branch) : undefined;
 }
@@ -2331,19 +2397,19 @@ async function fetchSearch(root, query) {
 }
 
 /**
- * The button over a session that shows its branch's changes in the side panel; hidden while the session has no branch
- * (style.css).
- * @param {string} sessionId
+ * The button over a session or terminal that shows its branch's changes in the side panel; hidden while it has no
+ * branch (style.css).
+ * @param {import('./model/herdr.js').Opened} opened
  * @returns {HTMLButtonElement}
  */
-function changesButton(sessionId) {
+function changesButton(opened) {
   const button = iconButton('branch');
   button.classList.add('head-changes');
   button.title = "The branch's changes";
   button.setAttribute('aria-label', button.title);
   button.addEventListener('click', () => {
     drawers.close();
-    filePanel.showChanges({ load: (base) => fetchChanges(sessionId, base), loadDiff: (base, file) => fetchFileDiff(sessionId, base, file) });
+    filePanel.showChanges({ load: (base) => fetchChanges(opened, base), loadDiff: (base, file) => fetchFileDiff(opened, base, file) });
   });
   return button;
 }
@@ -2367,17 +2433,16 @@ function historyButton(history) {
 }
 
 /**
- * The button over a session that takes herdr to the tab the session runs in — the tab's workspace with it — while it
- * runs in one.
- * @param {string} sessionId
+ * The button over a session or terminal that takes herdr to its tab — the tab's workspace with it — while it is in one.
+ * @param {import('./model/herdr.js').Opened} opened
  * @returns {{ button: HTMLButtonElement, show: (layout: import('./model/herdr.js').HerdrLayout) => void }}
  */
-function herdrTabButtonFor(sessionId) {
+function herdrTabButtonFor(opened) {
   const button = iconButton('shell');
   button.classList.add('head-herdr-tab');
-  button.title = "Open the session's tab in herdr";
+  button.title = opened.kind === 'session' ? "Open the session's tab in herdr" : 'Open the tab in herdr';
   button.setAttribute('aria-label', button.title);
-  return { button, show: herdrTabButton(button, sessionId, (tab) => void changeTab('/api/tab/focus', { tab })) };
+  return { button, show: herdrTabButton(button, opened, (tab) => void changeTab('/api/tab/focus', { tab })) };
 }
 
 /**
@@ -2414,38 +2479,38 @@ function restartButtonFor(sessionId, throughGpt) {
 }
 
 /**
- * The button over a session that keeps its agent's lamp lit to come back to — pressed while it is — and lets it go out;
- * there while the session runs in herdr.
- * @param {string} sessionId
+ * The button over a session or terminal that keeps its agent's lamp lit to come back to — pressed while it is — and
+ * lets it go out; there while an agent runs it in herdr.
+ * @param {import('./model/herdr.js').Opened} opened
  * @returns {{ button: HTMLButtonElement, show: (layout: import('./model/herdr.js').HerdrLayout, kept: import('./model/lamps.js').KeptPanes) => void }}
  */
-function keepLitButtonFor(sessionId) {
+function keepLitButtonFor(opened) {
   const button = iconButton('later');
   button.classList.add('head-keep-lit');
   button.title = 'Keep its lamp lit, to come back to later — again to let it go out (Ctrl+Q)';
   button.setAttribute('aria-label', button.title);
-  return { button, show: keepLitButton(button, sessionId, (pane) => page.toggleKept(pane)) };
+  return { button, show: keepLitButton(button, opened, (pane) => page.toggleKept(pane)) };
 }
 
 /**
- * The changes of the branch checked out in the session's folder, against a base chosen or the one it was made from.
- * @param {string} sessionId
+ * The changes of the branch checked out in the session's or pane's folder, against a base chosen or the one it was made from.
+ * @param {import('./model/herdr.js').Opened} opened
  * @param {string | undefined} base
  */
-async function fetchChanges(sessionId, base) {
-  const query = new URLSearchParams({ session: sessionId, ...(base === undefined ? {} : { base }) });
+async function fetchChanges(opened, base) {
+  const query = new URLSearchParams({ ...openedQuery(opened), ...(base === undefined ? {} : { base }) });
   const response = await fetch(`/api/changes?${query}`).catch(() => undefined);
   return parseBranchChanges(response?.ok ? await response.json().catch(() => undefined) : undefined);
 }
 
 /**
  * One changed file's diff since the base.
- * @param {string} sessionId
+ * @param {import('./model/herdr.js').Opened} opened
  * @param {string} base
  * @param {import('./model/branch-changes.js').ChangedFile} file
  */
-async function fetchFileDiff(sessionId, base, file) {
-  const query = new URLSearchParams({ session: sessionId, base, path: file.path, status: file.status, ...(file.oldPath === undefined ? {} : { old: file.oldPath }) });
+async function fetchFileDiff(opened, base, file) {
+  const query = new URLSearchParams({ ...openedQuery(opened), base, path: file.path, status: file.status, ...(file.oldPath === undefined ? {} : { old: file.oldPath }) });
   const response = await fetch(`/api/changes/file?${query}`).catch(() => undefined);
   return parseFileDiff(response?.ok ? await response.json().catch(() => undefined) : undefined);
 }

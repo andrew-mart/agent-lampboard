@@ -50,3 +50,31 @@ test('keepLitButton_Should_ToggleSessionsAgent_PressedWhileMarkHolds_ShownOnlyIn
     { beforeHerdr: false, unmarked: [true, 'false'], marked: 'true', outlived: 'false', afterTabClosed: false, toggled: ['w2:p2'] },
   );
 });
+
+// Over a pane's terminal the button is shown only while an agent runs in that pane — a plain shell has no lamp to keep
+test('keepLitButton_Should_TogglePanesAgent_ShownOnlyWhilePaneHasAnAgent', () => {
+  const button = window.document.createElement('button');
+  /** @type {string[]} */
+  const toggled = [];
+  const show = keepLitButton(button, { kind: 'pane', id: 'w2:p2' }, (pane) => void toggled.push(pane.id));
+  /** @type {import('../public/model/herdr.js').HerdrLayout} */
+  const shellOnly = {
+    herdr: true,
+    workspaces: [{ id: 'w2', number: 1, label: 'web', status: 'unknown', activeTab: 'w2:t2', tabs: [{ id: 'w2:t2', number: 2, label: 'shell', status: 'unknown', panes: [{ id: 'w2:p2', agent: undefined, status: 'unknown', title: undefined, session: undefined, size: undefined, activity: undefined }] }] }],
+  };
+  /** @type {import('../public/model/herdr.js').HerdrLayout} */
+  const agentInTerminal = {
+    herdr: true,
+    workspaces: [{ id: 'w2', number: 1, label: 'web', status: 'idle', activeTab: 'w2:t2', tabs: [{ id: 'w2:t2', number: 2, label: 'agy', status: 'idle', panes: [{ id: 'w2:p2', agent: 'agy', status: 'idle', title: undefined, session: undefined, size: undefined, activity: 9 }] }] }],
+  };
+
+  show(shellOnly, new Map());
+  const inShell = !button.hidden;
+  show(agentInTerminal, new Map());
+  const inAgent = [!button.hidden, button.getAttribute('aria-pressed')];
+  button.click();
+  show(agentInTerminal, new Map([['w2:p2', 9]]));
+  const marked = button.getAttribute('aria-pressed');
+
+  assert.deepEqual({ inShell, inAgent, marked, toggled }, { inShell: false, inAgent: [true, 'false'], marked: 'true', toggled: ['w2:p2'] });
+});

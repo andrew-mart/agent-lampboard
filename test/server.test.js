@@ -147,14 +147,14 @@ const webWorkspace = {
 
 /**
  * @param {import('node:test').TestContext} t
- * @param {{ takenBack?: string, refused?: string, palette?: import('../public/model/palettes.js').Palette, publicAddresses?: readonly import('../server/app.js').PublicAddress[], sessionRunning?: boolean, editor?: 'set' | 'none', vscode?: import('../server/vscode.js').VsCode | undefined, codexRoot?: string | undefined, codexInUse?: boolean, chatgptUsage?: import('../public/model/usage.js').Usage | undefined, agyUsage?: import('../public/model/usage.js').Usage | undefined, agy?: string | undefined, agyRewound?: { conversation: string, step: number, at: number } | undefined, sessionStatus?: import('../public/model/session-status.js').SessionStatus | undefined, statusRead?: Promise<unknown> }} [options] - takenBack: see
+ * @param {{ takenBack?: string, refused?: string, palette?: import('../public/model/palettes.js').Palette, publicAddresses?: readonly import('../server/app.js').PublicAddress[], sessionRunning?: boolean, editor?: 'set' | 'none', vscode?: import('../server/vscode.js').VsCode | undefined, codexRoot?: string | undefined, codexInUse?: boolean, chatgptUsage?: import('../public/model/usage.js').Usage | undefined, agyUsage?: import('../public/model/usage.js').Usage | undefined, agy?: string | undefined, agyRewound?: { conversation: string, step: number, at: number } | undefined, sessionStatus?: import('../public/model/session-status.js').SessionStatus | undefined, statusRead?: Promise<unknown>, paneFolder?: string | undefined }} [options] - takenBack: see
  *   fakeComposer; refused: a prompt the terminal does not take; palette, publicAddresses: what the viewer is started with; sessionRunning: whether Claude Code has the
  *   session open; editor: whether the viewer opens files in an editor — the files it is asked to open are recorded;
  *   vscode: VS Code's web server behind /vscode/; codexRoot: Codex's sessions folder; codexInUse: whether Codex has a
  *   thread open; agyRewound: agy's latest rewind of a conversation, as its run's log tells; statusRead: the session's
- *   status is read once it settles — a slow read
+ *   status is read once it settles — a slow read; paneFolder: the folder of w1:p1's tab in herdr
  */
-async function withServer(t, { takenBack, refused, palette = 'clay', publicAddresses = [], sessionRunning = true, editor = 'set', vscode = undefined, codexRoot = undefined, codexInUse = false, chatgptUsage = undefined, agyUsage = undefined, agy = undefined, agyRewound = undefined, sessionStatus = undefined, statusRead = Promise.resolve() } = {}) {
+async function withServer(t, { takenBack, refused, palette = 'clay', publicAddresses = [], sessionRunning = true, editor = 'set', vscode = undefined, codexRoot = undefined, codexInUse = false, chatgptUsage = undefined, agyUsage = undefined, agy = undefined, agyRewound = undefined, sessionStatus = undefined, statusRead = Promise.resolve(), paneFolder = undefined } = {}) {
   const root = tempDir('csv-');
   // the folders the sessions started in, for their desks: the session and one beside it in x, another in y
   const work = tempDir('server-desks-');
@@ -179,7 +179,12 @@ async function withServer(t, { takenBack, refused, palette = 'clay', publicAddre
   const herdrView = {
     forkedFrom: async (id) => (id === forkedSession ? sessionId : undefined),
     workspacesOf: async (listed) => ({ herdr: true, sessions: Object.fromEntries(listed.map(({ id }) => [id, 'web'])), icons: {} }),
-    layout: async () => ({ herdr: true, workspaces: [webWorkspace] }),
+    layout: async () => ({
+      herdr: true,
+      workspaces: [
+        paneFolder === undefined ? webWorkspace : { ...webWorkspace, tabs: webWorkspace.tabs.map((tab) => ({ ...tab, folder: paneFolder })) },
+      ],
+    }),
     history: async () => ({ [sessionId]: closedPlace }),
     reopen: async (session, cwd, agent) => {
       tabChanges.push(['reopen', session, String(cwd), agent]);
@@ -1832,6 +1837,30 @@ test('changes_Should_GiveBranchChangesInSessionFolder_AndFileDiff_RefusingBaseTh
   assert.deepEqual(
     { branch: changes.branch, base: changes.base.name, files: changes.files.map((/** @type {{ path: string }} */ one) => one.path), diff: diff.rows.map((/** @type {{ kind: string, text: string }} */ row) => `${row.kind} ${row.text}`), refused: refused.status },
     { branch: 'feat', base: 'main', files: ['a.txt'], diff: ['ctx one', 'add two'], refused: 400 },
+  );
+});
+
+// Over a pane's terminal the header asks for the branch and its changes by the pane's id — its tab's folder in herdr;
+// a pane id that is no id is refused
+test('branchAndChanges_Should_ReadPanesFolder_WhenAskedByPaneId', async (t) => {
+  const repo = tempDir('csv-pane-repo-');
+  const git = (/** @type {string[]} */ ...args) => promisify(execFile)('git', ['-c', 'user.name=Ann', '-c', 'user.email=ann@example.com', ...args], { cwd: repo });
+  await git('init', '-q', '-b', 'main');
+  await writeFile(join(repo, 'a.txt'), 'one\n');
+  await git('add', '-A');
+  await git('commit', '-q', '-m', 'start');
+  await git('checkout', '-q', '-b', 'feat');
+  await writeFile(join(repo, 'a.txt'), 'one\ntwo\n');
+  const { base } = await withServer(t, { paneFolder: repo });
+
+  const branch = await (await fetch(`${base}/api/branch?pane=w1:p1`)).json();
+  const changes = await (await fetch(`${base}/api/changes?pane=w1:p1`)).json();
+  const diff = await (await fetch(`${base}/api/changes/file?pane=w1:p1&base=${changes.base.sha}&path=a.txt&status=modified`)).json();
+  const bad = await fetch(`${base}/api/branch?pane=../bad`);
+
+  assert.deepEqual(
+    { branch, changes: changes.files.map((/** @type {{ path: string }} */ one) => one.path), diff: diff.rows.map((/** @type {{ kind: string, text: string }} */ row) => `${row.kind} ${row.text}`), bad: bad.status },
+    { branch: { branch: 'feat' }, changes: ['a.txt'], diff: ['ctx one', 'add two'], bad: 400 },
   );
 });
 

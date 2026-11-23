@@ -21,6 +21,7 @@ import { parseLaterChange } from '../public/model/later.js';
 import { parseNoteChange } from '../public/model/notes.js';
 import { parsePinChange } from '../public/model/pins.js';
 import { iconValue, parseIcon } from '../public/model/icon-choice.js';
+import { placeOf } from '../public/model/herdr.js';
 import { isRecord, text } from '../public/model/narrow.js';
 import { latestPrompt, standingRewind, takenBackPrompt, unansweredPrompt } from './branch.js';
 import { branchChanges, branchFileDiff } from './branch-changes.js';
@@ -354,28 +355,23 @@ async function handle(deps, request, response) {
         return sendJson(response, await deps.commands({ agent: session?.agent ?? 'claude', cwd: session?.startedIn }));
       });
     case '/api/branch':
-      // The branch checked out in the session's folder now, for the header.
-      return withSession(url, response, async (id) => {
-        const cwd = await sessionFolder(deps, id);
-        return sendJson(response, { branch: cwd === undefined ? undefined : await readBranch(cwd) });
-      });
+      // The branch checked out in the session's or pane's folder now, for the header.
+      return withFolder(deps, url, response, async (cwd) => sendJson(response, { branch: cwd === undefined ? undefined : await readBranch(cwd) }));
     case '/api/changes':
-      // What the branch checked out in the session's folder changed since it was made: its commits and files, what is
-      // not committed yet too; ?base= — a branch to compare with instead
-      return withSession(url, response, async (id) => {
-        const cwd = await sessionFolder(deps, id);
+      // What the branch checked out in the session's or pane's folder changed since it was made: its commits and files,
+      // what is not committed yet too; ?base= — a branch to compare with instead
+      return withFolder(deps, url, response, async (cwd) => {
         const base = url.searchParams.get('base') || undefined;
         return sendJson(response, cwd === undefined ? { ok: false, error: 'not-a-repository' } : await branchChanges(cwd, { base }));
       });
     case '/api/changes/file':
       // One changed file's diff since the base the page was given
-      return withSession(url, response, async (id) => {
+      return withFolder(deps, url, response, async (cwd) => {
         const file = changedFileOf(url);
         if (file === undefined) {
           response.writeHead(400).end('Bad file or base');
           return;
         }
-        const cwd = await sessionFolder(deps, id);
         return sendJson(response, cwd === undefined ? { ok: false, error: 'not-a-repository' } : await branchFileDiff(cwd, file));
       });
     // The page asks about herdr every few seconds: an unchanged reply goes without its body.
@@ -1359,6 +1355,28 @@ async function changeDesk(deps, sessionId, body, response) {
     return;
   }
   return sendJson(response, { ok: true, ...(await deskOf(deps, sessionId)) });
+}
+
+/**
+ * The folder of the session or herdr pane a request asks about: ?pane= for a terminal's header, ?session= for a
+ * session's — 400 for an id that is neither.
+ * @param {Deps} deps
+ * @param {URL} url
+ * @param {http.ServerResponse} response
+ * @param {(cwd: string | undefined) => Promise<void>} next
+ */
+async function withFolder(deps, url, response, next) {
+  if (url.searchParams.has('pane')) {
+    const pane = url.searchParams.get('pane') ?? '';
+    if (!paneIdPattern.test(pane)) {
+      response.writeHead(400).end('Bad pane id');
+      return;
+    }
+    const cwd = placeOf(await deps.herdrView.layout(), { kind: 'pane', id: pane })?.tab.folder;
+    await next(cwd);
+    return;
+  }
+  await withSession(url, response, async (id) => next(await sessionFolder(deps, id)));
 }
 
 /**

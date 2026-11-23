@@ -48,3 +48,21 @@ test('herdrTabButton_Should_TakeHerdrToSessionsTab_ShownOnlyWhileItRunsInOne', (
 
   assert.deepEqual({ beforeHerdr, whileRunning, afterClosed, focused }, { beforeHerdr: false, whileRunning: true, afterClosed: false, focused: ['w2:t2'] });
 });
+
+// Over a pane's terminal the same button takes herdr to that pane's tab, shown while the pane is in herdr
+test('herdrTabButton_Should_TakeHerdrToPanesTab_WhenGivenOpenedPane', () => {
+  const button = document.createElement('button');
+  /** @type {string[]} */
+  const focused = [];
+  const show = herdrTabButton(button, { kind: 'pane', id: 'w2:p1' }, (tab) => void focused.push(tab));
+  const beforeHerdr = !button.hidden;
+
+  show(runningInTests);
+  const whileOpen = !button.hidden;
+  button.click();
+  show(tabClosed);
+  const afterClosed = !button.hidden;
+  button.click();
+
+  assert.deepEqual({ beforeHerdr, whileOpen, afterClosed, focused }, { beforeHerdr: false, whileOpen: true, afterClosed: false, focused: ['w2:t1'] });
+});

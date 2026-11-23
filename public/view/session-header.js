@@ -38,41 +38,20 @@ const statusLooks = {
 const branchRefreshMs = 60_000;
 
 /**
- * @param {{ sessionId: string, place: SessionPlace | undefined, currentBranch: () => Promise<string | undefined>, tables: SessionTables, leading: HTMLElement, navigation: readonly HTMLElement[], folds: readonly HTMLElement[], tools: readonly HTMLElement[], rare: readonly HTMLElement[], rareOpeners: readonly HTMLElement[], details: readonly HTMLElement[] }} parts
- *   sessionId — the agent's id of the session, as its transcript is named;
- *   currentBranch — the branch checked out in the session's folder now (the transcript keeps the one it saw first);
- *   tables — how this session shows its tables, chosen in the details;
- *   leading — before the title (the session list's drawer button); navigation — buttons that always stay in view;
- *   folds — those of navigation's buttons used less on a narrow screen: there they fold into the view menu, as its first
- *   group, for the title to have room, and come back to their places on a wide one; tools — the view settings, folded
- *   into a menu on a narrow screen; rare — view settings used rarely: in the menu, its last group, even on a wide
- *   screen; rareOpeners — buttons used rarely that open something elsewhere, VS Code: first in that group, the menu put
- *   away once one is pressed; details — rows of the page's own at the end of the details, each a dt and its dd in one element, the same
- *   ones as the details are drawn anew
+ * Shared frame for a session's and a terminal pane's header: title, facts toggle, collapsible details, status badge,
+ * navigation groups that fold into the view menu on narrow screens, rare tools behind ⋯, and periodic branch polling.
+ * @param {{ className: string, detailsTitle: string, currentBranch: () => Promise<string | undefined>, onBranch: (branch: string | undefined) => void, leading: HTMLElement, navigation: readonly HTMLElement[], folds: readonly HTMLElement[], tools: readonly HTMLElement[], rare: readonly HTMLElement[], rareOpeners: readonly HTMLElement[] }} parts
  */
-export function createSessionHeader({ sessionId, place, currentBranch, tables, leading, navigation, folds, tools, rare, rareOpeners, details: ownRows }) {
+function createHeaderFrame({ className, detailsTitle, currentBranch, onBranch, leading, navigation, folds, tools, rare, rareOpeners }) {
   const title = h('h1', { className: 'title' });
-  const facts = h('button', { className: 'head-facts', attrs: { type: 'button', 'aria-expanded': 'false', title: 'Show session details' } });
+  const facts = h('button', { className: 'head-facts', attrs: { type: 'button', 'aria-expanded': 'false', title: detailsTitle } });
   const details = h('dl', { className: 'head-details', attrs: { hidden: '' } });
   const status = h('span', { className: 'status', attrs: { role: 'status' } });
   const folded = h('span', { className: 'head-group head-folded' });
   const toolbox = h('div', { className: 'head-tools', attrs: { role: 'group', 'aria-label': 'View' } }, [folded, ...tools, h('span', { className: 'head-group head-rare' }, [...rareOpeners, ...rare])]);
   const more = h('button', { className: 'icon-button head-more', title: 'View settings', attrs: { type: 'button', 'aria-label': 'View settings', 'aria-expanded': 'false' } }, [icon('more')]);
   const actions = h('div', { className: 'head-actions' }, [status, ...navigation, toolbox, more]);
-  const element = h('header', { className: 'session-head' }, [leading, title, facts, actions, details]);
-  /** @type {SessionMeta} */
-  let meta = {};
-  let where = place;
-  /** @type {string | undefined} */
-  let branch;
-
-  const render = () => {
-    title.textContent = meta.customTitle ?? meta.title ?? where?.title ?? 'Session';
-    document.title = `${title.textContent} — Claude Code`;
-    const gauge = meta.model === undefined || meta.contextTokens === undefined ? undefined : contextGauge({ model: meta.model, tokens: meta.contextTokens, extended: meta.extendedContext === true, window: meta.contextWindow });
-    facts.replaceChildren(...factChips({ sessionId, cwd: where?.cwd, branch, meta, gauge }), h('span', { className: 'facts-toggle' }, [icon('chevron')]));
-    details.replaceChildren(...detailRows({ sessionId, cwd: where?.cwd, branch, meta, gauge }), ...tablesRow(tables, render), ...ownRows);
-  };
+  const element = h('header', { className }, [leading, title, facts, actions, details]);
 
   const setOpen = (/** @type {HTMLButtonElement} */ button, /** @type {boolean} */ open) => button.setAttribute('aria-expanded', String(open));
   facts.addEventListener('click', () => {
@@ -113,37 +92,39 @@ export function createSessionHeader({ sessionId, place, currentBranch, tables, l
     if (event.target instanceof window.Element && event.target.closest('button') !== null) closeMenu();
   });
   for (const opener of rareOpeners) opener.addEventListener('click', closeMenu);
+
+  /** @type {string | undefined} */
+  let branch;
   const lookAtBranch = async () => {
     const next = await currentBranch();
     if (next === branch) return;
     branch = next;
-    render();
+    onBranch(branch);
   };
   // a while after each answer, and not while the page is out of sight (polling.js)
   const branchPoll = pollWhileShown(window, { ask: lookAtBranch, everyMs: branchRefreshMs, first: 'now' });
-  render();
+
+  /** @param {SessionStatus | undefined} next */
+  const showStatus = (next) => {
+    status.hidden = next === undefined;
+    if (next === undefined) {
+      delete status.dataset.status;
+      status.replaceChildren();
+      return;
+    }
+    const look = statusLooks[next];
+    status.dataset.status = next;
+    status.title = look.label;
+    status.setAttribute('aria-label', look.label);
+    status.replaceChildren(look.glyph());
+  };
 
   return {
     element,
-    /** @param {SessionMeta} next */
-    onMeta(next) {
-      meta = next;
-      render();
-    },
-    /** @param {SessionStatus} next */
-    onStatus(next) {
-      const look = statusLooks[next];
-      status.dataset.status = next;
-      status.title = look.label;
-      status.setAttribute('aria-label', look.label);
-      status.replaceChildren(look.glyph());
-    },
-    /** @param {SessionPlace} next */
-    updatePlace(next) {
-      where = next;
-      render();
-    },
-    /** The session wrote something — a checkout among it, maybe: the branch asked for at once. */
+    title,
+    facts,
+    details,
+    showStatus,
     pokeBranch: () => branchPoll.poke(),
     dispose() {
       branchPoll.stop();
@@ -151,6 +132,136 @@ export function createSessionHeader({ sessionId, place, currentBranch, tables, l
       document.removeEventListener('keydown', onKey);
       narrowScreen.removeEventListener('change', fold);
     },
+  };
+}
+
+/**
+ * @param {{ sessionId: string, place: SessionPlace | undefined, currentBranch: () => Promise<string | undefined>, tables: SessionTables, leading: HTMLElement, navigation: readonly HTMLElement[], folds: readonly HTMLElement[], tools: readonly HTMLElement[], rare: readonly HTMLElement[], rareOpeners: readonly HTMLElement[], details: readonly HTMLElement[] }} parts
+ *   sessionId — the agent's id of the session, as its transcript is named;
+ *   currentBranch — the branch checked out in the session's folder now (the transcript keeps the one it saw first);
+ *   tables — how this session shows its tables, chosen in the details;
+ *   leading — before the title (the session list's drawer button); navigation — buttons that always stay in view;
+ *   folds — those of navigation's buttons used less on a narrow screen: there they fold into the view menu, as its first
+ *   group, for the title to have room, and come back to their places on a wide one; tools — the view settings, folded
+ *   into a menu on a narrow screen; rare — view settings used rarely: in the menu, its last group, even on a wide
+ *   screen; rareOpeners — buttons used rarely that open something elsewhere, VS Code: first in that group, the menu put
+ *   away once one is pressed; details — rows of the page's own at the end of the details, each a dt and its dd in one element, the same
+ *   ones as the details are drawn anew
+ */
+export function createSessionHeader({ sessionId, place, currentBranch, tables, leading, navigation, folds, tools, rare, rareOpeners, details: ownRows }) {
+  /** @type {SessionMeta} */
+  let meta = {};
+  let where = place;
+  /** @type {string | undefined} */
+  let branch;
+
+  const render = () => {
+    frame.title.textContent = meta.customTitle ?? meta.title ?? where?.title ?? 'Session';
+    document.title = `${frame.title.textContent} — Claude Code`;
+    const gauge = meta.model === undefined || meta.contextTokens === undefined ? undefined : contextGauge({ model: meta.model, tokens: meta.contextTokens, extended: meta.extendedContext === true, window: meta.contextWindow });
+    frame.facts.replaceChildren(...factChips({ sessionId, cwd: where?.cwd, branch, meta, gauge }), h('span', { className: 'facts-toggle' }, [icon('chevron')]));
+    frame.details.replaceChildren(...detailRows({ sessionId, cwd: where?.cwd, branch, meta, gauge }), ...tablesRow(tables, render), ...ownRows);
+  };
+
+  const frame = createHeaderFrame({
+    className: 'session-head',
+    detailsTitle: 'Show session details',
+    currentBranch,
+    onBranch: (next) => {
+      branch = next;
+      render();
+    },
+    leading,
+    navigation,
+    folds,
+    tools,
+    rare,
+    rareOpeners,
+  });
+  render();
+
+  return {
+    element: frame.element,
+    /** @param {SessionMeta} next */
+    onMeta(next) {
+      meta = next;
+      render();
+    },
+    /** @param {SessionStatus} next */
+    onStatus(next) {
+      frame.showStatus(next);
+    },
+    /** @param {SessionPlace} next */
+    updatePlace(next) {
+      where = next;
+      render();
+    },
+    /** The session wrote something — a checkout among it, maybe: the branch asked for at once. */
+    pokeBranch: frame.pokeBranch,
+    dispose: frame.dispose,
+  };
+}
+
+/**
+ * The header over a herdr pane's terminal: the pane's name, its folder and git branch — opening into details with the
+ * full values and the rows the page adds — and the same action buttons and view menu as a session's header.
+ * @param {{ paneId: string, title: string, folder: string | undefined, status: import('../model/herdr.js').AgentStatus, currentBranch: () => Promise<string | undefined>, leading: HTMLElement, navigation: readonly HTMLElement[], folds: readonly HTMLElement[], tools: readonly HTMLElement[], rare: readonly HTMLElement[], rareOpeners: readonly HTMLElement[], details: readonly HTMLElement[] }} parts
+ */
+export function createPaneHeader({ paneId, title: initialTitle, folder: initialFolder, status: initialStatus, currentBranch, leading, navigation, folds, tools, rare, rareOpeners, details: ownRows }) {
+  let heading = initialTitle;
+  let cwd = initialFolder;
+  /** @type {string | undefined} */
+  let branch;
+
+  /** @param {import('../model/herdr.js').AgentStatus} paneStatus @returns {SessionStatus | undefined} */
+  const statusOf = (paneStatus) => (paneStatus === 'unknown' ? undefined : paneStatus === 'working' ? 'working' : 'idle');
+
+  const render = () => {
+    frame.title.textContent = heading;
+    document.title = `${heading} — Claude Code`;
+    const chips = [];
+    if (cwd !== undefined) chips.push(chip('folder', 'fact-folder', [h('span', { text: folderName(cwd) })], cwd));
+    if (branch !== undefined) chips.push(chip('branch', 'fact-branch', [h('span', { text: branch })], `Branch ${branch}`));
+    if (chips.length === 0) chips.push(h('span', { className: 'fact fact-session', title: `Pane ${paneId}` }, [h('span', { text: paneId })]));
+    frame.facts.replaceChildren(...chips, h('span', { className: 'facts-toggle' }, [icon('chevron')]));
+    /** @type {[string, (string | HTMLElement)[]][]} */
+    const rows = [];
+    if (cwd !== undefined) rows.push(['Folder', [h('code', { text: cwd })]]);
+    if (branch !== undefined) rows.push(['Branch', [h('code', { text: branch })]]);
+    rows.push(['Pane', [h('code', { text: paneId })]]);
+    frame.details.replaceChildren(...rows.flatMap(([label, value]) => [h('dt', { text: label }), h('dd', {}, value)]), ...ownRows);
+  };
+
+  const frame = createHeaderFrame({
+    className: 'session-head pane-head',
+    detailsTitle: 'Show terminal details',
+    currentBranch,
+    onBranch: (next) => {
+      branch = next;
+      render();
+    },
+    leading,
+    navigation,
+    folds,
+    tools,
+    rare,
+    rareOpeners,
+  });
+  frame.showStatus(statusOf(initialStatus));
+  render();
+
+  return {
+    element: frame.element,
+    /** @param {{ title: string, folder: string | undefined, status: import('../model/herdr.js').AgentStatus }} next */
+    update(next) {
+      const folderChanged = next.folder !== cwd;
+      heading = next.title;
+      cwd = next.folder;
+      frame.showStatus(statusOf(next.status));
+      render();
+      if (folderChanged) frame.pokeBranch();
+    },
+    dispose: frame.dispose,
   };
 }
 
