@@ -84,8 +84,9 @@ test('sessionHeader_Should_ShowGptModelAndItsReportedContextWindow', (t) => {
   const header = headerOf('0d3f9a2c-1b7e-4c55-9e0a-6f2d8b41c7e3');
   t.after(header.dispose);
 
-  header.onMeta({ model: 'gpt-6-sol', contextTokens: 420_000, contextWindow: 1_050_000, effort: 'high' });
+  header.onMeta({ title: 'Fix checkout', model: 'gpt-6-sol', contextTokens: 420_000, contextWindow: 1_050_000, effort: 'high' });
 
+  assert.equal(window.document.title, 'Fix checkout — Agent Lampboard');
   assert.match(header.element.querySelector('.fact-model')?.textContent ?? '', /gpt-6-sol/);
   assert.equal(header.element.querySelector('.fact-context')?.textContent, '420k/1.05M');
   assert.equal(header.element.querySelector('.fact-context')?.getAttribute('data-level'), 'calm');
@@ -277,7 +278,7 @@ test('paneHeader_Should_ShowTitleFolderBranchStatusAndDetails_AndFoldToolsOnNarr
       initial: { title: 'w2:p1', statusHidden: true, facts: 'w2:p1', branchCalls: 1 },
       afterUpdate: {
         title: 'web · shell',
-        docTitle: 'web · shell — Claude Code',
+        docTitle: 'web · shell — Agent Lampboard',
         statusHidden: false,
         statusKind: 'working',
         folderChip: 'shop',

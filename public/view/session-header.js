@@ -167,7 +167,7 @@ export function createSessionHeader({ sessionId, place, currentBranch, tables, l
 
   const render = () => {
     frame.title.textContent = meta.customTitle ?? meta.title ?? where?.title ?? 'Session';
-    document.title = `${frame.title.textContent} — Claude Code`;
+    document.title = `${frame.title.textContent} — Agent Lampboard`;
     const gauge = meta.model === undefined || meta.contextTokens === undefined ? undefined : contextGauge({ model: meta.model, tokens: meta.contextTokens, extended: meta.extendedContext === true, window: meta.contextWindow });
     frame.facts.replaceChildren(...factChips({ sessionId, cwd: where?.cwd, branch, meta, gauge, modelTrigger: modelControl?.trigger }), frame.detailsToggle);
     frame.details.replaceChildren(...detailRows({ sessionId, cwd: where?.cwd, branch, meta, gauge }), ...tablesRow(tables, render), ...ownRows);
@@ -234,7 +234,7 @@ export function createPaneHeader({ paneId, title: initialTitle, folder: initialF
 
   const render = () => {
     frame.title.textContent = heading;
-    document.title = `${heading} — Claude Code`;
+    document.title = `${heading} — Agent Lampboard`;
     const chips = [];
     if (cwd !== undefined) chips.push(chip('folder', 'fact-folder', [h('span', { text: folderName(cwd) })], cwd));
     if (branch !== undefined) chips.push(chip('branch', 'fact-branch', [h('span', { text: branch })], `Branch ${branch}`));
