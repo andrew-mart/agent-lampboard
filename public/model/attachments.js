@@ -4,8 +4,8 @@
 // again.
 
 const heading = 'Attached images:';
-/** A file the viewer saved: …/.claude-code-webview/uploads/<name>; the name is the server's own, never a user's. */
-const uploadedFile = /[\\/]\.claude-code-webview[\\/]uploads[\\/]([\w-]+\.(?:png|jpe?g|gif|webp))$/i;
+/** A file the viewer saved: …/.agent-lampboard/uploads/<name> (or legacy .claude-code-webview/uploads/<name>); the name is the server's own, never a user's. */
+const uploadedFile = /[\\/]\.(?:agent-lampboard|claude-code-webview)[\\/]uploads[\\/]([\w-]+\.(?:png|jpe?g|gif|webp))$/i;
 
 /**
  * @param {string} text — what the user typed

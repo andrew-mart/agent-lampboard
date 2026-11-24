@@ -7,7 +7,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 /**
- * @param {string} file — ~/.claude-code-webview/hidden-workspaces.json
+ * @param {string} file — ~/.agent-lampboard/hidden-workspaces.json
  */
 export function createHiddenWorkspaces(file) {
   /** The workspaces hidden, by id: read from the file once, then kept here and written back. */

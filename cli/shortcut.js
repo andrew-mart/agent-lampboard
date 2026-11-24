@@ -1,5 +1,5 @@
 // @ts-check
-// The "Claude Code Webview" shortcut on the desktop or in the Start menu (Windows only).
+// The "Agent Lampboard" shortcut on the desktop or in the Start menu (Windows only).
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -25,13 +25,13 @@ export async function installShortcut({ scriptPath, iconPath, workingDir, folder
   const quote = (/** @type {string} */ value) => `'${value.replaceAll("'", "''")}'`;
   const script = [
     `$folder = [Environment]::GetFolderPath('${folder}')`,
-    "$link = Join-Path $folder 'Claude Code Webview.lnk'",
+    "$link = Join-Path $folder 'Agent Lampboard.lnk'",
     '$shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($link)',
     `$shortcut.TargetPath = ${quote(process.execPath)}`,
     `$shortcut.Arguments = ${quote(`"${scriptPath}" --background`)}`,
     `$shortcut.WorkingDirectory = ${quote(workingDir)}`,
     `$shortcut.IconLocation = ${quote(iconPath)}`,
-    "$shortcut.Description = 'Claude Code sessions in the browser'",
+    "$shortcut.Description = 'Agent Lampboard — Claude Code, Codex, and Antigravity CLI in the browser'",
     '$shortcut.WindowStyle = 7',
     '$shortcut.Save()',
     'Write-Output $link',

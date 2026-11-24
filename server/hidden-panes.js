@@ -16,7 +16,7 @@ const limit = 200;
  */
 
 /**
- * @param {string} file — ~/.claude-code-webview/hidden-panes.json
+ * @param {string} file — ~/.agent-lampboard/hidden-panes.json
  */
 export function createHiddenPanes(file) {
   /** Read from the file once, then kept here and written back. */

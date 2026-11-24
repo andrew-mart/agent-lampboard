@@ -7,7 +7,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 /**
- * @param {string} file — ~/.claude-code-webview/kept.json
+ * @param {string} file — ~/.agent-lampboard/kept.json
  * @param {{ limit: number }} options — limit: how many agents it keeps marked at most
  * @returns {{ all: () => Promise<Record<string, number>>, set: (pane: string, count: number | undefined) => Promise<void> }} —
  *   set: the pane's agent marked at herdr's count of its changes, or its mark taken off

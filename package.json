@@ -1,29 +1,34 @@
 {
-  "name": "claude-code-webview",
+  "name": "agent-lampboard",
   "version": "0.1.0",
-  "description": "Watch Claude Code sessions live in your browser, styled like Claude Desktop: file previews, bookmarks, an outline of your prompts, and — with herdr — sending prompts from the page.",
+  "description": "A browser workspace for Claude Code, Codex, Antigravity CLI, and shell terminals: herdr workspaces, status lamps, file and document previews, Project Desks, Markdown notes, and whole-branch diffs.",
   "keywords": [
     "claude",
     "claude-code",
+    "codex",
+    "antigravity",
     "anthropic",
     "transcript",
     "session",
     "viewer",
     "webui",
+    "lampboard",
     "herdr"
   ],
   "license": "MIT",
   "author": "Andrei Martyshchenko",
-  "homepage": "https://github.com/andrew-mart/claude-code-webview#readme",
+  "homepage": "https://github.com/andrew-mart/agent-lampboard#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/andrew-mart/claude-code-webview.git"
+    "url": "git+https://github.com/andrew-mart/agent-lampboard.git"
   },
   "bugs": {
-    "url": "https://github.com/andrew-mart/claude-code-webview/issues"
+    "url": "https://github.com/andrew-mart/agent-lampboard/issues"
   },
   "type": "module",
   "bin": {
+    "agent-lampboard": "bin/agent-lampboard.js",
+    "lampboard": "bin/agent-lampboard.js",
     "claude-code-webview": "bin/claude-code-webview.js"
   },
   "files": [
@@ -37,10 +42,10 @@
     "node": ">=22"
   },
   "scripts": {
-    "start": "node bin/claude-code-webview.js",
-    "background": "node bin/claude-code-webview.js --background",
-    "stop": "node bin/claude-code-webview.js --stop",
-    "restart": "node bin/claude-code-webview.js --restart",
+    "start": "node bin/agent-lampboard.js",
+    "background": "node bin/agent-lampboard.js --background",
+    "stop": "node bin/agent-lampboard.js --stop",
+    "restart": "node bin/agent-lampboard.js --restart",
     "test": "node --test",
     "check": "tsc -p . && tsc -p tsconfig.sw.json",
     "prepublishOnly": "npm run check && npm test"

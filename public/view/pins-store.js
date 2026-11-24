@@ -1,5 +1,5 @@
 // @ts-check
-// The files pinned beside a session, kept by the viewer's server (~/.claude-code-webview/pins.json): its project
+// The files pinned beside a session, kept by the viewer's server (~/.agent-lampboard/pins.json): its project
 // folder's — every session in it shows them, on every device — and its own. A change shows at once; the server's reply
 // then replaces them. Coming back to the window reloads them, so a file pinned elsewhere appears. A reply asked for
 // before the latest change — the pins reloaded, an earlier change's — comes without it and is dropped.

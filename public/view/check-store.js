@@ -1,5 +1,5 @@
 // @ts-check
-// The green checks on a session's messages, kept by the viewer's server (~/.claude-code-webview/checks.json): every
+// The green checks on a session's messages, kept by the viewer's server (~/.agent-lampboard/checks.json): every
 // device sees the same ones.
 import { changeChecks, parseChecks } from '../model/checks.js';
 

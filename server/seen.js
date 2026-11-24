@@ -7,7 +7,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 /**
- * @param {string} file — ~/.claude-code-webview/seen.json
+ * @param {string} file — ~/.agent-lampboard/seen.json
  * @param {{ limit: number }} options — limit: how many agents it keeps at most
  * @returns {{ all: () => Promise<Record<string, number>>, mark: (pane: string, count: number) => Promise<void> }} —
  *   mark: the pane's answer seen at herdr's count of its changes

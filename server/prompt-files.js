@@ -6,7 +6,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /**
- * @param {string} dir — ~/.claude-code-webview/prompts
+ * @param {string} dir — ~/.agent-lampboard/prompts
  */
 export function createPromptFiles(dir) {
   return {

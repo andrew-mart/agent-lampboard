@@ -1,5 +1,5 @@
 // @ts-check
-// A session's prompts set aside for later, kept by the viewer's server (~/.claude-code-webview/later.json): every
+// A session's prompts set aside for later, kept by the viewer's server (~/.agent-lampboard/later.json): every
 // device sees the same ones. A change shows at once; the server's reply then replaces the list. Coming back to the
 // window reloads it, so a prompt set aside on another device appears.
 import { changeLaterPrompts, parseLaterPrompts } from '../model/later.js';

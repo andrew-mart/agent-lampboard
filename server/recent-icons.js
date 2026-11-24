@@ -8,7 +8,7 @@ import { parseIcon } from '../public/model/icon-choice.js';
 import { withIconUsed } from '../public/model/recent-icons.js';
 
 /**
- * @param {string} file — ~/.claude-code-webview/recent-icons.json
+ * @param {string} file — ~/.agent-lampboard/recent-icons.json
  * @returns {{ all: () => Promise<string[]>, use: (icon: string) => Promise<void> }} — all: the latest first; use: an
  *   icon put on a tab or a workspace now
  */

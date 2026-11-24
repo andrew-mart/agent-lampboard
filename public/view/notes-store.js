@@ -1,5 +1,5 @@
 // @ts-check
-// The notes of a session's project folder, kept by the viewer's server (~/.claude-code-webview/notes.json): every device,
+// The notes of a session's project folder, kept by the viewer's server (~/.agent-lampboard/notes.json): every device,
 // and every session in the folder, sees the same ones. A change shows at once; the server's reply then replaces the
 // list. Coming back to the window reloads it, so a note written elsewhere appears. A reply asked for before the latest
 // change — the list reloaded, an earlier change's — comes without it and is dropped: the latest change's reply is the one.

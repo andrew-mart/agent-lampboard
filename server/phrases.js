@@ -13,7 +13,7 @@ import { phraseOf, topPhrases, withPhraseSent } from '../public/model/phrases.js
  */
 
 /**
- * @param {string} file — ~/.claude-code-webview/phrases.json
+ * @param {string} file — ~/.agent-lampboard/phrases.json
  * @returns {{ top: (count: number) => Promise<Phrase[]>, sent: (prompt: string, at: number) => Promise<void> }} — top:
  *   the phrases sent most, the most first; sent: a prompt the terminal took, counted if it is a phrase
  */

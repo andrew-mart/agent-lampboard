@@ -1,5 +1,5 @@
 // @ts-check
-// The claude-code-webview command: start the viewer (in the foreground or in the background), stop it, create a shortcut.
+// The agent-lampboard command: start the viewer (in the foreground or in the background), stop it, create a shortcut.
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { mkdir, open, readFile } from 'node:fs/promises';
@@ -11,15 +11,15 @@ import { parseCommand } from './args.js';
 import { openBrowser, serve, stateDir } from './serve.js';
 import { installShortcut, isTemporaryInstall } from './shortcut.js';
 
-const binPath = fileURLToPath(new URL('../bin/claude-code-webview.js', import.meta.url));
+const binPath = fileURLToPath(new URL('../bin/agent-lampboard.js', import.meta.url));
 const iconPath = fileURLToPath(new URL('../assets/icon.ico', import.meta.url));
 const logFile = join(stateDir, 'server.log');
 /** How long to wait for the background server to start answering. */
 const startTimeoutMs = 20_000;
 
-const usage = `claude-code-webview — Claude Code sessions in the browser, styled like Claude Desktop
+const usage = `agent-lampboard — A browser workspace for Claude Code, Codex, Antigravity CLI, and shell terminals
 
-Usage: claude-code-webview [options]
+Usage: agent-lampboard [options]
 
   (no options)          start the viewer and open it in the browser (Ctrl+C to stop);
                         if it is already running, just open the browser
@@ -71,7 +71,7 @@ the input box and the workspaces are not shown.`;
 export async function main(argv) {
   const parsed = parseCommand(argv);
   if (!parsed.ok) {
-    console.error(`${parsed.error}\nRun "claude-code-webview --help" for usage.`);
+    console.error(`${parsed.error}\nRun "agent-lampboard --help" for usage.`);
     return 2;
   }
   const { command } = parsed;
@@ -190,16 +190,27 @@ async function stop(port) {
  */
 async function shortcut(startMenu) {
   if (process.platform !== 'win32') {
-    console.error('Shortcuts are created on Windows only. Elsewhere run "claude-code-webview --background".');
+    console.error('Shortcuts are created on Windows only. Elsewhere run "agent-lampboard --background".');
     return 1;
   }
   if (isTemporaryInstall(binPath)) {
-    console.error('This copy runs from the npx cache, which npm may clean up — a shortcut to it would break.\nInstall the package globally and create the shortcut from there:\n  npm install -g claude-code-webview\n  claude-code-webview --install-shortcut');
+    console.error('This copy runs from the npx cache, which npm may clean up — a shortcut to it would break.\nInstall the package globally and create the shortcut from there:\n  npm install -g agent-lampboard\n  agent-lampboard --install-shortcut');
     return 1;
   }
   const link = await installShortcut({ scriptPath: binPath, iconPath, workingDir: homedir(), folder: startMenu ? 'Programs' : 'Desktop' });
   console.log(`Shortcut created: ${link}`);
   return 0;
+}
+
+/**
+ * The viewer's process id from /api/health, accepting both the current name and the pre-rename one so --stop and
+ * --restart can replace an already-running process cleanly.
+ * @param {unknown} health
+ * @returns {number | undefined}
+ */
+export function viewerPidFromHealth(health) {
+  if (!isRecord(health) || typeof health.pid !== 'number') return undefined;
+  return health.name === 'agent-lampboard' || health.name === 'claude-code-webview' ? health.pid : undefined;
 }
 
 /**
@@ -211,7 +222,8 @@ async function probe(port) {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(2000) });
     const health = await response.json().catch(() => undefined);
-    if (response.ok && isRecord(health) && health.name === 'claude-code-webview' && typeof health.pid === 'number') return { kind: 'viewer', pid: health.pid };
+    const pid = response.ok ? viewerPidFromHealth(health) : undefined;
+    if (pid !== undefined) return { kind: 'viewer', pid };
     return { kind: 'other' };
   } catch (error) {
     // Connection refused — the port is free; no reply in time — the port is held by something that does not answer.
@@ -241,7 +253,7 @@ async function waitUntil(port, wanted, timeoutMs) {
 
 /** @param {number} port */
 function portTaken(port) {
-  console.error(`Port ${port} is used by another program. Choose another one: claude-code-webview --port 7800`);
+  console.error(`Port ${port} is used by another program. Choose another one: agent-lampboard --port 7800`);
   return 1;
 }
 
@@ -250,7 +262,7 @@ function readAbout() {
   const json = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   const name = isRecord(json) ? text(json.name) : undefined;
   const version = isRecord(json) ? text(json.version) : undefined;
-  if (name === undefined || version === undefined) throw new Error('package.json of claude-code-webview has no name or version');
+  if (name === undefined || version === undefined) throw new Error('package.json of agent-lampboard has no name or version');
   return { name, version };
 }
 

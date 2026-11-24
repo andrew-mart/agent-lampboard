@@ -42,7 +42,7 @@ export function parseImages(value) {
 }
 
 /**
- * @param {string} dir — ~/.claude-code-webview/uploads
+ * @param {string} dir — ~/.agent-lampboard/uploads
  */
 export function createUploads(dir) {
   return {

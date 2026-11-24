@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { splitAttachedImages, uploadUrl, withAttachedImages } from '../public/model/attachments.js';
 
-const photo = 'C:\\Users\\ann\\.claude-code-webview\\uploads\\2026-10-10_134501-k3f9qa.jpg';
-const screenshot = '/home/ann/.claude-code-webview/uploads/2026-10-10_134502-x81mzt.png';
+const photo = 'C:\\Users\\ann\\.agent-lampboard\\uploads\\2026-10-10_134501-k3f9qa.jpg';
+const screenshot = '/home/ann/.agent-lampboard/uploads/2026-10-10_134502-x81mzt.png';
+const legacyScreenshot = '/home/ann/.claude-code-webview/uploads/2026-10-10_134502-x81mzt.png';
 
 test('withAttachedImages_Should_ListImagePathsAfterPromptText', () => {
   assert.equal(withAttachedImages('Why is the legend cut off?  \n', [photo, screenshot]), `Why is the legend cut off?\n\nAttached images:\n${photo}\n${screenshot}`);
@@ -24,6 +25,7 @@ test('splitAttachedImages_Should_TakeImagePathsOffTheEndOfPrompt', () => {
 test('uploadUrl_Should_LinkOnlyFilesFromViewerUploadsFolder', () => {
   assert.equal(uploadUrl(photo), '/api/upload/2026-10-10_134501-k3f9qa.jpg');
   assert.equal(uploadUrl(screenshot), '/api/upload/2026-10-10_134502-x81mzt.png');
+  assert.equal(uploadUrl(legacyScreenshot), '/api/upload/2026-10-10_134502-x81mzt.png');
   assert.equal(uploadUrl('C:\\Users\\ann\\Pictures\\holiday.jpg'), undefined);
-  assert.equal(uploadUrl('/home/ann/.claude-code-webview/uploads/../secrets.png'), undefined);
+  assert.equal(uploadUrl('/home/ann/.agent-lampboard/uploads/../secrets.png'), undefined);
 });

@@ -6,7 +6,7 @@ import { appendFile, mkdir, rename, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 /**
- * @param {string} file — ~/.claude-code-webview/diagnostics.jsonl
+ * @param {string} file — ~/.agent-lampboard/diagnostics.jsonl
  * @param {{ maxBytes: number }} options — maxBytes: past it the log is begun anew
  * @returns {{ record: (report: Record<string, unknown>, from: { at: number, agent: string }) => Promise<void> }}
  */

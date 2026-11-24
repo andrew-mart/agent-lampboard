@@ -1,5 +1,5 @@
 // @ts-check
-// Session bookmarks kept by the viewer's server (~/.claude-code-webview/bookmarks.json): every device sees the same ones.
+// Session bookmarks kept by the viewer's server (~/.agent-lampboard/bookmarks.json): every device sees the same ones.
 import { changeBookmarks, parseBookmarks } from '../model/bookmarks.js';
 
 /**

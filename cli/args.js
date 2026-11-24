@@ -1,5 +1,5 @@
 // @ts-check
-// Arguments of the claude-code-webview command.
+// Arguments of the agent-lampboard command.
 import { parseArgs } from 'node:util';
 import { paletteNamed, palettes } from '../public/model/palettes.js';
 import { parseEditorCommand } from '../server/editor.js';

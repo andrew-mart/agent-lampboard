@@ -1,13 +1,33 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
 import { parseCommand } from '../cli/args.js';
+import { viewerPidFromHealth } from '../cli/main.js';
+import { chooseStateDir } from '../cli/serve.js';
 import { isTemporaryInstall } from '../cli/shortcut.js';
 
 test('isTemporaryInstall_Should_RecognizeNpxCacheOnEverySystem', () => {
-  assert.equal(isTemporaryInstall('C:\\Users\\a\\AppData\\Local\\npm-cache\\_npx\\1f2e\\node_modules\\claude-code-webview\\bin\\claude-code-webview.js'), true);
-  assert.equal(isTemporaryInstall('/home/a/.npm/_npx/1f2e/node_modules/claude-code-webview/bin/claude-code-webview.js'), true);
-  assert.equal(isTemporaryInstall('C:\\Users\\a\\AppData\\Roaming\\npm\\node_modules\\claude-code-webview\\bin\\claude-code-webview.js'), false);
-  assert.equal(isTemporaryInstall('D:\\dev\\claude-code-webview\\bin\\claude-code-webview.js'), false);
+  assert.equal(isTemporaryInstall('C:\\Users\\a\\AppData\\Local\\npm-cache\\_npx\\1f2e\\node_modules\\agent-lampboard\\bin\\agent-lampboard.js'), true);
+  assert.equal(isTemporaryInstall('/home/a/.npm/_npx/1f2e/node_modules/agent-lampboard/bin/agent-lampboard.js'), true);
+  assert.equal(isTemporaryInstall('C:\\Users\\a\\AppData\\Roaming\\npm\\node_modules\\agent-lampboard\\bin\\agent-lampboard.js'), false);
+  assert.equal(isTemporaryInstall('D:\\dev\\agent-lampboard\\bin\\agent-lampboard.js'), false);
+});
+
+test('chooseStateDir_Should_UseAgentLampboardByDefault_AndFallBackToExistingLegacyFolder', () => {
+  const home = '/home/ann';
+  const fresh = join(home, '.agent-lampboard');
+  const legacy = join(home, '.claude-code-webview');
+
+  assert.equal(chooseStateDir(home, () => false), fresh);
+  assert.equal(chooseStateDir(home, (path) => path === legacy), legacy);
+  assert.equal(chooseStateDir(home, (path) => path === fresh || path === legacy), fresh);
+});
+
+test('viewerPidFromHealth_Should_AcceptAgentLampboardAndLegacyName_AndRejectOtherPrograms', () => {
+  assert.equal(viewerPidFromHealth({ name: 'agent-lampboard', version: '0.1.0', pid: 4120 }), 4120);
+  assert.equal(viewerPidFromHealth({ name: 'claude-code-webview', version: '0.1.0', pid: 3180 }), 3180);
+  assert.equal(viewerPidFromHealth({ name: 'other-server', pid: 4120 }), undefined);
+  assert.equal(viewerPidFromHealth(undefined), undefined);
 });
 
 test('parseCommand_Should_ServeAndOpenBrowserByDefault', () => {
