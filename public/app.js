@@ -89,6 +89,8 @@ import { createHistoryView, earlierLink } from './view/history-view.js';
 import { herdrTabButton } from './view/herdr-tab-button.js';
 import { exitButton, restartButton } from './view/restart-button.js';
 import { createEffortRow } from './view/effort-row.js';
+import { createAgyModelPicker } from './view/agy-model-picker.js';
+import { parseAgyModelsReply } from './model/agy-models.js';
 import { createSystemRow } from './view/system-row.js';
 import { keepLitButton } from './view/keep-lit-button.js';
 
@@ -1169,6 +1171,15 @@ function createPage() {
     const restart = restartButtonFor(id, () => history[id]?.claudeGpt === true);
     // how hard Claude Code thinks in it: /effort typed into its terminal
     const effort = createEffortRow(id, { set: (level) => typeIntoSession(id, `/effort ${level}`) });
+    // agy's model and effort picker right on the header's model chip: /model <slug> typed straight into its terminal
+    /** @type {ReturnType<typeof createSessionHeader> | undefined} */
+    let headerRef;
+    const agyModel = createAgyModelPicker(id, {
+      load: fetchAgyModels,
+      set: (modelId) => typeIntoSession(id, `/model ${modelId}`),
+      onActiveChange: () => headerRef?.refresh(),
+      onOpen: () => headerRef?.closeDetails(),
+    });
     // how busy the viewer's computer is, on a phone: the tabs' row there has no room for it
     const system = createSystemRow({ page: window, read: readSystem, readProcesses, everyMs: systemEveryMs });
     const keepLit = keepLitButtonFor(opened);
@@ -1179,7 +1190,8 @@ function createPage() {
     const [tabHistory, branchChanges, vscode, fileManager] = [historyButton(historyView), changesButton(opened), vscodeButton(folder), fileManagerButton(folder)];
     const folds = [tabHistory, branchChanges, herdrTab.button, fileManager].map(labelled);
     const navigation = [headGroup([drawerButton('outline', 'list', 'Outline'), tabHistory, branchChanges, filesButton(folder)]), headGroup([herdrTab.button, keepLit.button, fileManager])];
-    const header = createSessionHeader({ sessionId: id, place: info, currentBranch: () => fetchBranch(opened), tables, leading: drawerButton('sessions', 'menu', 'Sessions'), navigation, folds, tools: settings.buttons(), rare: rareTools(), rareOpeners: [labelled(vscode)], details: [restart.row, effort.row, system.row] });
+    const header = createSessionHeader({ sessionId: id, place: info, currentBranch: () => fetchBranch(opened), tables, leading: drawerButton('sessions', 'menu', 'Sessions'), navigation, folds, tools: settings.buttons(), rare: rareTools(), rareOpeners: [labelled(vscode)], details: [restart.row, effort.row, system.row], modelControl: { trigger: agyModel.trigger, panel: agyModel.panel } });
+    headerRef = header;
     const outlineElement = h('aside', { className: 'outline', attrs: { 'aria-label': 'Outline' } });
     const outline = createOutline({
       element: outlineElement,
@@ -1428,6 +1440,7 @@ function createPage() {
       onMeta(next) {
         header.onMeta(next);
         effort.showCurrent(next.effort);
+        agyModel.showCurrent(next.model, next.effort);
       },
       onStatus(next) {
         header.onStatus(next);
@@ -1453,6 +1466,7 @@ function createPage() {
       part.relay.detach();
       part.queue.send = () => undefined;
       header.dispose();
+      agyModel.dispose();
       system.dispose();
       composer.dispose();
       tasks.dispose();
@@ -1493,6 +1507,7 @@ function createPage() {
         herdrTab.show(herdrLayout);
         restart.show(herdrLayout);
         effort.show(herdrLayout);
+        agyModel.show(herdrLayout);
         keepLit.show(herdrLayout, keptPanes);
       },
       // Like the terminal, the rewound message comes back into the box to be edited and sent again.
@@ -2010,13 +2025,23 @@ function drawerButton(name, iconName, label) {
 
 /**
  * A line typed into a session's terminal from the page, as the box sends a prompt — a slash command the page offers.
+ * Not counted as a phrase for the quick-phrases bar.
  * @param {string} sessionId
  * @param {string} text
  * @returns {Promise<boolean>} — whether the terminal took it
  */
 async function typeIntoSession(sessionId, text) {
-  const response = await fetch('/api/send', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Viewer': '1' }, body: JSON.stringify({ session: sessionId, text, images: [] }) }).catch(() => undefined);
+  const response = await fetch('/api/send', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Viewer': '1' }, body: JSON.stringify({ session: sessionId, text, images: [], phrase: false }) }).catch(() => undefined);
   return response?.ok === true && parseOutcome(await response.json().catch(() => undefined))?.ok === true;
+}
+
+/**
+ * Antigravity CLI's available models and their effort levels, as cached by the viewer server.
+ * @returns {Promise<readonly import('./model/agy-models.js').AgyModel[]>}
+ */
+async function fetchAgyModels() {
+  const response = await fetch('/api/agy/models').catch(() => undefined);
+  return response?.ok === true ? parseAgyModelsReply(await response.json().catch(() => undefined)) : [];
 }
 
 /**

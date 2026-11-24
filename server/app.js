@@ -166,6 +166,7 @@ const paneIdPattern = /^[\w:-]{1,40}$/;
  *   — the commands and phrases sent from the page, counted (phrases.js)
  * @typedef {(conversation: string) => Promise<import('./agy-live.js').AgyRewind | undefined>} AgyRewound — agy's latest rewind of a
  *   conversation, as its runs' logs tell; none if it never rewound it
+ * @typedef {() => Promise<readonly import('../public/model/agy-models.js').AgyModel[]>} ReadAgyModels — agy's available models and their effort levels
  * @typedef {(sessionId: string) => Promise<boolean>} IsRunning
  * @typedef {(path: string, line: number) => Promise<import('./editor.js').EditorOutcome>} OpenEditor
  * @typedef {(session: { agent: import('./sessions.js').Agent, cwd: string | undefined }) => Promise<readonly import('./commands.js').SlashCommand[]>} SessionCommands —
@@ -183,7 +184,7 @@ const paneIdPattern = /^[\w:-]{1,40}$/;
 const noPhrases = { top: async () => [], sent: async () => undefined };
 
 /**
- * @param {{ index: SessionIndex, host: string, port: number, pollMs: number, changesEveryMs: number, composer: Composer, bookmarks: import('./bookmarks.js').Bookmarks, checks: import('./checks.js').Checks, later: import('./later.js').LaterPrompts, desks: import('./desks.js').Desks, pins: import('./pins.js').Pins, seen: Seen, kept: Kept, diagnostics: Diagnostics, uploads: Uploads, promptFiles: PromptFiles, about: About, palette: import('../public/model/palettes.js').Palette, publicAddresses: readonly PublicAddress[], herdrView: HerdrView, terminals: Terminals, usage: ReadUsage, system: SystemUsage, processes: Processes, chatgptUsage?: ReadUsage, agyUsage?: ReadUsage, agyRewound?: AgyRewound, phrases?: Phrases, sessionStatus?: ReadSessionStatus, isRunning: IsRunning, editor: OpenEditor | undefined, fileManager: OpenFileManager, commands: SessionCommands, vscode?: import('./vscode.js').VsCode | undefined, codexInUse: () => Promise<boolean> }} options
+ * @param {{ index: SessionIndex, host: string, port: number, pollMs: number, changesEveryMs: number, composer: Composer, bookmarks: import('./bookmarks.js').Bookmarks, checks: import('./checks.js').Checks, later: import('./later.js').LaterPrompts, desks: import('./desks.js').Desks, pins: import('./pins.js').Pins, seen: Seen, kept: Kept, diagnostics: Diagnostics, uploads: Uploads, promptFiles: PromptFiles, about: About, palette: import('../public/model/palettes.js').Palette, publicAddresses: readonly PublicAddress[], herdrView: HerdrView, terminals: Terminals, usage: ReadUsage, system: SystemUsage, processes: Processes, chatgptUsage?: ReadUsage, agyUsage?: ReadUsage, agyModels?: ReadAgyModels, agyRewound?: AgyRewound, phrases?: Phrases, sessionStatus?: ReadSessionStatus, isRunning: IsRunning, editor: OpenEditor | undefined, fileManager: OpenFileManager, commands: SessionCommands, vscode?: import('./vscode.js').VsCode | undefined, codexInUse: () => Promise<boolean> }} options
  *   about — package name and version for /api/health; palette — the page's colours (public/model/palettes.js);
  *   publicAddresses — where else the page is opened at, answered as the local address is; herdrView — what herdr
  *   shows (herdr-view.js); terminals — herdr panes' terminals (terminal.js); usage — the account's usage (usage.js);
@@ -194,7 +195,7 @@ const noPhrases = { top: async () => [], sent: async () => undefined };
  *   thread open (codex-live.js)
  * @returns {Promise<{ port: number, close: () => void }>}
  */
-export async function startServer({ index, host, port, pollMs, changesEveryMs, composer, bookmarks, checks, later, desks, pins, seen, kept, diagnostics, uploads, promptFiles, about, palette, publicAddresses, herdrView, terminals, usage, system, processes, chatgptUsage = async () => undefined, agyUsage = async () => undefined, agyRewound = async () => undefined, phrases = noPhrases, sessionStatus = async () => undefined, isRunning, editor, fileManager, commands, vscode, codexInUse }) {
+export async function startServer({ index, host, port, pollMs, changesEveryMs, composer, bookmarks, checks, later, desks, pins, seen, kept, diagnostics, uploads, promptFiles, about, palette, publicAddresses, herdrView, terminals, usage, system, processes, chatgptUsage = async () => undefined, agyUsage = async () => undefined, agyModels = async () => [], agyRewound = async () => undefined, phrases = noPhrases, sessionStatus = async () => undefined, isRunning, editor, fileManager, commands, vscode, codexInUse }) {
   const instance = randomUUID();
   const build = await pageBuild();
   const pageModules = await modulesAtStart();
@@ -267,7 +268,7 @@ export async function startServer({ index, host, port, pollMs, changesEveryMs, c
     giveUpMs: cutWatchMs,
   });
   /** @type {Deps} */
-  const deps = { index, allowedHosts, allowedOrigins, pollMs, composer, bookmarks, checks, later, desks, pins, seen, kept, diagnostics, codexInUse, uploads, promptFiles, about, build, pageModules, feedEntries, rewinds, transcripts, feeds, palette, herdrView, terminals, usage, system, processes, chatgptUsage, agyUsage, agyRewound, phrases, subagentsWork, sessionStatus, isRunning, editor, fileManager, commands, vscode, instance, fileIcons, sentPrompts, promptCuts };
+  const deps = { index, allowedHosts, allowedOrigins, pollMs, composer, bookmarks, checks, later, desks, pins, seen, kept, diagnostics, codexInUse, uploads, promptFiles, about, build, pageModules, feedEntries, rewinds, transcripts, feeds, palette, herdrView, terminals, usage, system, processes, chatgptUsage, agyUsage, agyModels, agyRewound, phrases, subagentsWork, sessionStatus, isRunning, editor, fileManager, commands, vscode, instance, fileIcons, sentPrompts, promptCuts };
   const server = http.createServer((request, response) => {
     handle(deps, request, response).catch((error) => {
       console.error(`${request.method} ${request.url} failed`, error);
@@ -303,7 +304,7 @@ export async function startServer({ index, host, port, pollMs, changesEveryMs, c
 
 /**
  * @typedef {ReturnType<typeof createSessionIndex>} SessionIndex — Claude Code's sessions and Codex's (sessions.js)
- * @typedef {{ index: SessionIndex, allowedHosts: ReadonlySet<string>, allowedOrigins: ReadonlySet<string>, pollMs: number, composer: Composer, bookmarks: import('./bookmarks.js').Bookmarks, checks: import('./checks.js').Checks, later: import('./later.js').LaterPrompts, desks: import('./desks.js').Desks, pins: import('./pins.js').Pins, uploads: Uploads, promptFiles: PromptFiles, about: About, build: string, pageModules: readonly string[], feedEntries: string, rewinds: Map<string, import('./branch.js').RewindMark>, transcripts: import('./stream.js').TranscriptCache, feeds: ReturnType<typeof createFeedPages>, palette: import('../public/model/palettes.js').Palette, herdrView: HerdrView, terminals: Terminals, usage: ReadUsage, system: SystemUsage, processes: Processes, chatgptUsage: ReadUsage, agyUsage: ReadUsage, agyRewound: AgyRewound, phrases: Phrases, subagentsWork: (session: string) => Promise<boolean>, sessionStatus: ReadSessionStatus, isRunning: IsRunning, editor: OpenEditor | undefined, fileManager: OpenFileManager, commands: SessionCommands, vscode: import('./vscode.js').VsCode | undefined, instance: string, fileIcons: ReturnType<typeof createFileIcons>, seen: Seen, kept: Kept, diagnostics: Diagnostics, codexInUse: () => Promise<boolean>, sentPrompts: import('./sent-prompts.js').SentPrompts, promptCuts: PromptCuts }} Deps
+ * @typedef {{ index: SessionIndex, allowedHosts: ReadonlySet<string>, allowedOrigins: ReadonlySet<string>, pollMs: number, composer: Composer, bookmarks: import('./bookmarks.js').Bookmarks, checks: import('./checks.js').Checks, later: import('./later.js').LaterPrompts, desks: import('./desks.js').Desks, pins: import('./pins.js').Pins, uploads: Uploads, promptFiles: PromptFiles, about: About, build: string, pageModules: readonly string[], feedEntries: string, rewinds: Map<string, import('./branch.js').RewindMark>, transcripts: import('./stream.js').TranscriptCache, feeds: ReturnType<typeof createFeedPages>, palette: import('../public/model/palettes.js').Palette, herdrView: HerdrView, terminals: Terminals, usage: ReadUsage, system: SystemUsage, processes: Processes, chatgptUsage: ReadUsage, agyUsage: ReadUsage, agyModels: ReadAgyModels, agyRewound: AgyRewound, phrases: Phrases, subagentsWork: (session: string) => Promise<boolean>, sessionStatus: ReadSessionStatus, isRunning: IsRunning, editor: OpenEditor | undefined, fileManager: OpenFileManager, commands: SessionCommands, vscode: import('./vscode.js').VsCode | undefined, instance: string, fileIcons: ReturnType<typeof createFileIcons>, seen: Seen, kept: Kept, diagnostics: Diagnostics, codexInUse: () => Promise<boolean>, sentPrompts: import('./sent-prompts.js').SentPrompts, promptCuts: PromptCuts }} Deps
  *   instance: this run of the viewer, told apart from any other — see /api/machine; vscode: VS Code's web server
  *   behind /vscode/, none when the viewer runs none
  * @typedef {Pick<ReturnType<typeof import('./herdr-view.js').createHerdrView>, 'forkedFrom' | 'workspacesOf' | 'layout' | 'renameTab' | 'closeTab' | 'focusTab' | 'moveTab' | 'renameWorkspace' | 'closeWorkspace' | 'setWorkspaceIcon' | 'hideWorkspace' | 'showWorkspace' | 'hidePane' | 'showHidden' | 'createTab' | 'duplicateTab' | 'continueTab' | 'createWorkspace' | 'history' | 'reopen' | 'restart' | 'exit'>} HerdrView
@@ -414,6 +415,9 @@ async function handle(deps, request, response) {
     // Antigravity CLI's, as its status line dropped it last
     case '/api/usage/agy':
       return sendJson(response, (await deps.agyUsage()) ?? {});
+    // Antigravity CLI's available models and their effort levels, for the session header's picker
+    case '/api/agy/models':
+      return sendJson(response, { models: await deps.agyModels() });
     // the commands and phrases sent from the page most, the most first (phrase-bar.js)
     case '/api/phrases':
       return sendJson(response, (await deps.phrases.top(10)).map(({ text, count }) => ({ text, count })));
@@ -751,8 +755,8 @@ async function handleWrite(deps, url, request, response) {
         // now: what waits in Claude Code's queue goes at once, the prompt with it — Ctrl+Enter on the page
         const outcome = isRecord(body) && body.now === true ? await deps.composer.sendNow(sessionId, prompt) : await deps.composer.send(sessionId, prompt);
         if (!outcome.ok) await deps.uploads.remove(paths);
-        // a phrase the terminal took counts as sent once more
-        else await deps.phrases.sent(typed, Date.now());
+        // a phrase the terminal took counts as sent once more — unless sent by a UI control (/model, /effort)
+        else if (!isRecord(body) || body.phrase !== false) await deps.phrases.sent(typed, Date.now());
         if (outcome.ok && mark !== undefined) void deps.promptCuts.watch(sessionId, prompt, mark).catch((error) => console.error(`Watching session ${sessionId} for its prompt failed`, error));
         return outcome;
       };

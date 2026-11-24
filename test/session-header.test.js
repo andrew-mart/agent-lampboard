@@ -291,3 +291,80 @@ test('paneHeader_Should_ShowTitleFolderBranchStatusAndDetails_AndFoldToolsOnNarr
     },
   );
 });
+
+// When a session provides an interactive model picker (agy), its trigger replaces the read-only model chip in the
+// facts bar while active — without opening details on click — and its popover mounts directly in the header so it is
+// never clipped by the facts bar
+test('sessionHeader_Should_MountInteractiveModelTriggerInFactsSlot_WithoutTogglingDetails', (t) => {
+  const trigger = window.document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'fact fact-model fact-model-pick';
+  trigger.textContent = 'Gemini 4 Neon';
+  trigger.hidden = true;
+  let triggerClicks = 0;
+  trigger.addEventListener('click', () => {
+    triggerClicks += 1;
+  });
+  const panel = window.document.createElement('div');
+  panel.className = 'agy-model-popover';
+  panel.hidden = true;
+
+  const header = createSessionHeader({
+    sessionId: '675eea90-5475-430f-ad4a-86e0de5c27cb',
+    place: undefined,
+    currentBranch: async () => undefined,
+    tables: { value: () => 'default', choose: () => undefined },
+    leading: window.document.createElement('div'),
+    navigation: [],
+    folds: [],
+    tools: [],
+    rare: [],
+    rareOpeners: [],
+    details: [],
+    modelControl: { trigger, panel },
+  });
+  t.after(header.dispose);
+
+  header.onMeta({ model: 'Gemini 4 Neon', effort: 'high' });
+  const whileHidden = {
+    modelChips: header.element.querySelectorAll('.head-facts .fact-model').length,
+    isSpan: header.element.querySelector('.head-facts .fact-model')?.tagName === 'SPAN',
+  };
+
+  trigger.hidden = false;
+  header.refresh();
+  const detailsEl = header.element.querySelector('.head-details');
+  assert.ok(detailsEl instanceof window.HTMLElement);
+
+  // Clicking the interactive model chip fires its own click without expanding details
+  trigger.click();
+  const afterTriggerClick = {
+    modelChips: header.element.querySelectorAll('.head-facts .fact-model').length,
+    triggerInFacts: header.element.querySelector('.head-facts .fact-model') === trigger,
+    panelParentIsHeader: panel.parentElement === header.element,
+    triggerClicks,
+    detailsOpen: !detailsEl.hidden,
+  };
+
+  // Clicking another fact chip opens details, and closeDetails folds it back
+  header.element.querySelector('.head-facts .fact-session')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  const afterOtherFactClick = !detailsEl.hidden;
+  header.closeDetails();
+  const afterCloseDetails = !detailsEl.hidden;
+
+  assert.deepEqual(
+    { whileHidden, afterTriggerClick, afterOtherFactClick, afterCloseDetails },
+    {
+      whileHidden: { modelChips: 1, isSpan: true },
+      afterTriggerClick: {
+        modelChips: 1,
+        triggerInFacts: true,
+        panelParentIsHeader: true,
+        triggerClicks: 1,
+        detailsOpen: false,
+      },
+      afterOtherFactClick: true,
+      afterCloseDetails: false,
+    },
+  );
+});

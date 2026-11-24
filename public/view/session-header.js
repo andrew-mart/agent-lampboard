@@ -44,7 +44,8 @@ const branchRefreshMs = 60_000;
  */
 function createHeaderFrame({ className, detailsTitle, currentBranch, onBranch, leading, navigation, folds, tools, rare, rareOpeners }) {
   const title = h('h1', { className: 'title' });
-  const facts = h('button', { className: 'head-facts', attrs: { type: 'button', 'aria-expanded': 'false', title: detailsTitle } });
+  const facts = h('div', { className: 'head-facts', title: detailsTitle });
+  const detailsToggle = h('button', { className: 'facts-toggle', title: detailsTitle, attrs: { type: 'button', 'aria-expanded': 'false', 'aria-label': detailsTitle } }, [icon('chevron')]);
   const details = h('dl', { className: 'head-details', attrs: { hidden: '' } });
   const status = h('span', { className: 'status', attrs: { role: 'status' } });
   const folded = h('span', { className: 'head-group head-folded' });
@@ -54,10 +55,15 @@ function createHeaderFrame({ className, detailsTitle, currentBranch, onBranch, l
   const element = h('header', { className }, [leading, title, facts, actions, details]);
 
   const setOpen = (/** @type {HTMLButtonElement} */ button, /** @type {boolean} */ open) => button.setAttribute('aria-expanded', String(open));
-  facts.addEventListener('click', () => {
-    const open = facts.getAttribute('aria-expanded') !== 'true';
-    setOpen(facts, open);
+  const setDetailsOpen = (/** @type {boolean} */ open) => {
+    setOpen(detailsToggle, open);
+    facts.dataset.expanded = String(open);
     details.hidden = !open;
+  };
+  facts.addEventListener('click', (event) => {
+    const pressed = event.target instanceof window.Element ? event.target.closest('button') : null;
+    if (pressed !== null && pressed !== detailsToggle) return;
+    setDetailsOpen(details.hidden);
   });
   more.addEventListener('click', () => {
     const open = more.getAttribute('aria-expanded') !== 'true';
@@ -123,8 +129,11 @@ function createHeaderFrame({ className, detailsTitle, currentBranch, onBranch, l
     element,
     title,
     facts,
+    detailsToggle,
     details,
     showStatus,
+    closeDetails: () => setDetailsOpen(false),
+    closeMenu,
     pokeBranch: () => branchPoll.poke(),
     dispose() {
       branchPoll.stop();
@@ -136,7 +145,7 @@ function createHeaderFrame({ className, detailsTitle, currentBranch, onBranch, l
 }
 
 /**
- * @param {{ sessionId: string, place: SessionPlace | undefined, currentBranch: () => Promise<string | undefined>, tables: SessionTables, leading: HTMLElement, navigation: readonly HTMLElement[], folds: readonly HTMLElement[], tools: readonly HTMLElement[], rare: readonly HTMLElement[], rareOpeners: readonly HTMLElement[], details: readonly HTMLElement[] }} parts
+ * @param {{ sessionId: string, place: SessionPlace | undefined, currentBranch: () => Promise<string | undefined>, tables: SessionTables, leading: HTMLElement, navigation: readonly HTMLElement[], folds: readonly HTMLElement[], tools: readonly HTMLElement[], rare: readonly HTMLElement[], rareOpeners: readonly HTMLElement[], details: readonly HTMLElement[], modelControl?: { trigger: HTMLButtonElement, panel: HTMLElement } }} parts
  *   sessionId — the agent's id of the session, as its transcript is named;
  *   currentBranch — the branch checked out in the session's folder now (the transcript keeps the one it saw first);
  *   tables — how this session shows its tables, chosen in the details;
@@ -146,9 +155,10 @@ function createHeaderFrame({ className, detailsTitle, currentBranch, onBranch, l
  *   into a menu on a narrow screen; rare — view settings used rarely: in the menu, its last group, even on a wide
  *   screen; rareOpeners — buttons used rarely that open something elsewhere, VS Code: first in that group, the menu put
  *   away once one is pressed; details — rows of the page's own at the end of the details, each a dt and its dd in one element, the same
- *   ones as the details are drawn anew
+ *   ones as the details are drawn anew; modelControl — interactive model & effort trigger and popover (agy), replacing
+ *   the read-only model chip while active
  */
-export function createSessionHeader({ sessionId, place, currentBranch, tables, leading, navigation, folds, tools, rare, rareOpeners, details: ownRows }) {
+export function createSessionHeader({ sessionId, place, currentBranch, tables, leading, navigation, folds, tools, rare, rareOpeners, details: ownRows, modelControl }) {
   /** @type {SessionMeta} */
   let meta = {};
   let where = place;
@@ -159,7 +169,7 @@ export function createSessionHeader({ sessionId, place, currentBranch, tables, l
     frame.title.textContent = meta.customTitle ?? meta.title ?? where?.title ?? 'Session';
     document.title = `${frame.title.textContent} — Claude Code`;
     const gauge = meta.model === undefined || meta.contextTokens === undefined ? undefined : contextGauge({ model: meta.model, tokens: meta.contextTokens, extended: meta.extendedContext === true, window: meta.contextWindow });
-    frame.facts.replaceChildren(...factChips({ sessionId, cwd: where?.cwd, branch, meta, gauge }), h('span', { className: 'facts-toggle' }, [icon('chevron')]));
+    frame.facts.replaceChildren(...factChips({ sessionId, cwd: where?.cwd, branch, meta, gauge, modelTrigger: modelControl?.trigger }), frame.detailsToggle);
     frame.details.replaceChildren(...detailRows({ sessionId, cwd: where?.cwd, branch, meta, gauge }), ...tablesRow(tables, render), ...ownRows);
   };
 
@@ -178,6 +188,7 @@ export function createSessionHeader({ sessionId, place, currentBranch, tables, l
     rare,
     rareOpeners,
   });
+  if (modelControl !== undefined) frame.element.append(modelControl.panel);
   render();
 
   return {
@@ -195,6 +206,11 @@ export function createSessionHeader({ sessionId, place, currentBranch, tables, l
     updatePlace(next) {
       where = next;
       render();
+    },
+    refresh: render,
+    closeDetails: () => {
+      frame.closeDetails();
+      frame.closeMenu();
     },
     /** The session wrote something — a checkout among it, maybe: the branch asked for at once. */
     pokeBranch: frame.pokeBranch,
@@ -223,7 +239,7 @@ export function createPaneHeader({ paneId, title: initialTitle, folder: initialF
     if (cwd !== undefined) chips.push(chip('folder', 'fact-folder', [h('span', { text: folderName(cwd) })], cwd));
     if (branch !== undefined) chips.push(chip('branch', 'fact-branch', [h('span', { text: branch })], `Branch ${branch}`));
     if (chips.length === 0) chips.push(h('span', { className: 'fact fact-session', title: `Pane ${paneId}` }, [h('span', { text: paneId })]));
-    frame.facts.replaceChildren(...chips, h('span', { className: 'facts-toggle' }, [icon('chevron')]));
+    frame.facts.replaceChildren(...chips, frame.detailsToggle);
     /** @type {[string, (string | HTMLElement)[]][]} */
     const rows = [];
     if (cwd !== undefined) rows.push(['Folder', [h('code', { text: cwd })]]);
@@ -266,7 +282,7 @@ export function createPaneHeader({ paneId, title: initialTitle, folder: initialF
 }
 
 /**
- * @typedef {{ sessionId: string, cwd: string | undefined, branch: string | undefined, meta: SessionMeta, gauge: ContextGauge | undefined }} Facts
+ * @typedef {{ sessionId: string, cwd: string | undefined, branch: string | undefined, meta: SessionMeta, gauge: ContextGauge | undefined, modelTrigger?: HTMLButtonElement | undefined }} Facts
  */
 
 /**
@@ -274,11 +290,12 @@ export function createPaneHeader({ paneId, title: initialTitle, folder: initialF
  * @param {Facts} facts
  * @returns {HTMLElement[]}
  */
-function factChips({ sessionId, cwd, branch, meta, gauge }) {
+function factChips({ sessionId, cwd, branch, meta, gauge, modelTrigger }) {
   const chips = [];
   if (cwd !== undefined) chips.push(chip('folder', 'fact-folder', [h('span', { text: folderName(cwd) })], cwd));
   if (branch !== undefined) chips.push(chip('branch', 'fact-branch', [h('span', { text: branch })], `Branch ${branch}`));
-  if (meta.model !== undefined) chips.push(chip('model', 'fact-model', [h('span', { text: modelName(meta.model) }), ...effortTag(meta.effort)], meta.model));
+  if (modelTrigger !== undefined && !modelTrigger.hidden) chips.push(modelTrigger);
+  else if (meta.model !== undefined) chips.push(chip('model', 'fact-model', [h('span', { text: modelName(meta.model) }), ...effortTag(meta.effort)], meta.model));
   if (gauge !== undefined) chips.push(contextChip(gauge));
   if (meta.costUsd !== undefined) chips.push(h('span', { className: 'fact fact-cost', text: `$${meta.costUsd.toFixed(2)}`, title: 'Cost of the session' }));
   // its first characters tell it from the others, as a commit's short hash does

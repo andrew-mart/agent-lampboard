@@ -147,14 +147,14 @@ const webWorkspace = {
 
 /**
  * @param {import('node:test').TestContext} t
- * @param {{ takenBack?: string, refused?: string, palette?: import('../public/model/palettes.js').Palette, publicAddresses?: readonly import('../server/app.js').PublicAddress[], sessionRunning?: boolean, editor?: 'set' | 'none', vscode?: import('../server/vscode.js').VsCode | undefined, codexRoot?: string | undefined, codexInUse?: boolean, chatgptUsage?: import('../public/model/usage.js').Usage | undefined, agyUsage?: import('../public/model/usage.js').Usage | undefined, agy?: string | undefined, agyRewound?: { conversation: string, step: number, at: number } | undefined, sessionStatus?: import('../public/model/session-status.js').SessionStatus | undefined, statusRead?: Promise<unknown>, paneFolder?: string | undefined }} [options] - takenBack: see
+ * @param {{ takenBack?: string, refused?: string, palette?: import('../public/model/palettes.js').Palette, publicAddresses?: readonly import('../server/app.js').PublicAddress[], sessionRunning?: boolean, editor?: 'set' | 'none', vscode?: import('../server/vscode.js').VsCode | undefined, codexRoot?: string | undefined, codexInUse?: boolean, chatgptUsage?: import('../public/model/usage.js').Usage | undefined, agyUsage?: import('../public/model/usage.js').Usage | undefined, agyModels?: readonly import('../public/model/agy-models.js').AgyModel[] | undefined, agy?: string | undefined, agyRewound?: { conversation: string, step: number, at: number } | undefined, sessionStatus?: import('../public/model/session-status.js').SessionStatus | undefined, statusRead?: Promise<unknown>, paneFolder?: string | undefined }} [options] - takenBack: see
  *   fakeComposer; refused: a prompt the terminal does not take; palette, publicAddresses: what the viewer is started with; sessionRunning: whether Claude Code has the
  *   session open; editor: whether the viewer opens files in an editor — the files it is asked to open are recorded;
  *   vscode: VS Code's web server behind /vscode/; codexRoot: Codex's sessions folder; codexInUse: whether Codex has a
  *   thread open; agyRewound: agy's latest rewind of a conversation, as its run's log tells; statusRead: the session's
  *   status is read once it settles — a slow read; paneFolder: the folder of w1:p1's tab in herdr
  */
-async function withServer(t, { takenBack, refused, palette = 'clay', publicAddresses = [], sessionRunning = true, editor = 'set', vscode = undefined, codexRoot = undefined, codexInUse = false, chatgptUsage = undefined, agyUsage = undefined, agy = undefined, agyRewound = undefined, sessionStatus = undefined, statusRead = Promise.resolve(), paneFolder = undefined } = {}) {
+async function withServer(t, { takenBack, refused, palette = 'clay', publicAddresses = [], sessionRunning = true, editor = 'set', vscode = undefined, codexRoot = undefined, codexInUse = false, chatgptUsage = undefined, agyUsage = undefined, agyModels = undefined, agy = undefined, agyRewound = undefined, sessionStatus = undefined, statusRead = Promise.resolve(), paneFolder = undefined } = {}) {
   const root = tempDir('csv-');
   // the folders the sessions started in, for their desks: the session and one beside it in x, another in y
   const work = tempDir('server-desks-');
@@ -285,7 +285,7 @@ async function withServer(t, { takenBack, refused, palette = 'clay', publicAddre
   // the file manager opens what is asked
   /** @type {import('../server/file-manager.js').FileManagerTarget[]} */
   const shownInFileManager = [];
-  const server = await startServer({ index: createSessionIndex(root, { summaryBudgetMs: 1500, missRetryMs: 0, codexRoot, ...(agy === undefined ? {} : { agy: createAgyConversations(agy) }) }), host: '127.0.0.1', port: 0, pollMs: 30, changesEveryMs: 40, composer, bookmarks: createBookmarkFile(join(root, 'bookmarks.json')), checks: createCheckFile(join(root, 'checks.json')), later: createLaterFile(join(root, 'later.json')), desks, pins: createPinsFile(join(root, 'pins.json')), seen: createSeenFile(join(root, 'seen.json'), { limit: 100 }), kept: createKeptFile(join(root, 'kept.json'), { limit: 100 }), diagnostics: createDiagnosticsLog(join(root, 'diagnostics.jsonl'), { maxBytes: 1_000_000 }), uploads: createUploads(join(root, 'uploads')), promptFiles: createPromptFiles(join(root, 'prompts')), about: { name: 'claude-code-webview', version: '9.9.9' }, palette, publicAddresses, herdrView, terminals, usage: async () => accountUsage, system: { read: async () => ({ cpu: 31, memory: { used: 24_000, total: 32_000 }, gpu: undefined }) }, processes: { read: async (by) => [{ pid: 4120, name: `node by ${by}`, cpu: 12, memory: 104_857_600, gpu: by === 'gpu' ? 3 : undefined }] }, isRunning: async (/** @type {string} */ id) => sessionRunning && id === sessionId, editor: editor === 'set' ? openEditor : undefined, fileManager: async (target) => (shownInFileManager.push(target), true), commands: async ({ agent, cwd }) => [{ name: `/${agent}`, hint: '', about: cwd ?? 'nowhere', source: 'built-in' }], vscode, codexInUse: async () => codexInUse, chatgptUsage: async () => chatgptUsage, agyUsage: async () => agyUsage, phrases: createPhrasesFile(join(root, 'phrases.json')), agyRewound: async (conversation) => (agyRewound?.conversation === conversation ? { step: agyRewound.step, at: agyRewound.at } : undefined), sessionStatus: async (id) => {
+  const server = await startServer({ index: createSessionIndex(root, { summaryBudgetMs: 1500, missRetryMs: 0, codexRoot, ...(agy === undefined ? {} : { agy: createAgyConversations(agy) }) }), host: '127.0.0.1', port: 0, pollMs: 30, changesEveryMs: 40, composer, bookmarks: createBookmarkFile(join(root, 'bookmarks.json')), checks: createCheckFile(join(root, 'checks.json')), later: createLaterFile(join(root, 'later.json')), desks, pins: createPinsFile(join(root, 'pins.json')), seen: createSeenFile(join(root, 'seen.json'), { limit: 100 }), kept: createKeptFile(join(root, 'kept.json'), { limit: 100 }), diagnostics: createDiagnosticsLog(join(root, 'diagnostics.jsonl'), { maxBytes: 1_000_000 }), uploads: createUploads(join(root, 'uploads')), promptFiles: createPromptFiles(join(root, 'prompts')), about: { name: 'claude-code-webview', version: '9.9.9' }, palette, publicAddresses, herdrView, terminals, usage: async () => accountUsage, system: { read: async () => ({ cpu: 31, memory: { used: 24_000, total: 32_000 }, gpu: undefined }) }, processes: { read: async (by) => [{ pid: 4120, name: `node by ${by}`, cpu: 12, memory: 104_857_600, gpu: by === 'gpu' ? 3 : undefined }] }, isRunning: async (/** @type {string} */ id) => sessionRunning && id === sessionId, editor: editor === 'set' ? openEditor : undefined, fileManager: async (target) => (shownInFileManager.push(target), true), commands: async ({ agent, cwd }) => [{ name: `/${agent}`, hint: '', about: cwd ?? 'nowhere', source: 'built-in' }], vscode, codexInUse: async () => codexInUse, chatgptUsage: async () => chatgptUsage, agyUsage: async () => agyUsage, ...(agyModels === undefined ? {} : { agyModels: async () => agyModels }), phrases: createPhrasesFile(join(root, 'phrases.json')), agyRewound: async (conversation) => (agyRewound?.conversation === conversation ? { step: agyRewound.step, at: agyRewound.at } : undefined), sessionStatus: async (id) => {
       await statusRead;
       return id === sessionId ? sessionStatus : undefined;
     } });
@@ -2692,4 +2692,39 @@ test('usage_Should_TellCodexsUsage_FromSessionItWorkedInLast_WhileCodexIsInUse',
   const usageAt = async (at) => (await fetch(`${at}/api/usage/codex`)).json();
 
   assert.deepEqual([await usageAt(base), await usageAt(none), await usageAt(unused)], [{ sevenDay: { percent: 39, resetsAt: 1792491476000 }, readAt: Date.parse('2026-10-14T10:02:00.000Z') }, {}, {}]);
+});
+
+// Antigravity CLI's available models come from /api/agy/models; viewers without agy reply with an empty list
+test('agyModels_Should_ReturnConfiguredModelsAndEmptyListByDefault', async (t) => {
+  const catalog = [{ name: 'Gemini 4 Neon', defaultId: 'gemini-4-neon-high', defaultEffort: /** @type {const} */ ('high'), efforts: [{ level: /** @type {const} */ ('high'), id: 'gemini-4-neon-high' }] }];
+  const { base } = await withServer(t, { agyModels: catalog });
+  const { base: none } = await withServer(t);
+
+  const [withModels, withoutModels] = await Promise.all([
+    fetch(`${base}/api/agy/models`).then((r) => r.json()),
+    fetch(`${none}/api/agy/models`).then((r) => r.json()),
+  ]);
+
+  assert.deepEqual([withModels, withoutModels], [{ models: catalog }, { models: [] }]);
+});
+
+// Commands triggered from UI controls (such as switching model or effort) pass phrase: false so they still reach the
+// terminal without polluting the quick-phrases bar
+test('send_Should_NotCountPromptAsPhrase_WhenMarkedPhraseFalse', async (t) => {
+  const { port, base, calls } = await withServer(t);
+
+  await post(port, '/api/send', pageHeaders(port), JSON.stringify({ session: sessionId, text: '/model gemini-4-neon-xhigh', images: [], phrase: false }));
+  await post(port, '/api/send', pageHeaders(port), JSON.stringify({ session: sessionId, text: 'Run tests', images: [] }));
+  const phrases = await (await fetch(`${base}/api/phrases`)).json();
+
+  assert.deepEqual(
+    { calls, phrases },
+    {
+      calls: [
+        ['send', sessionId, '/model gemini-4-neon-xhigh'],
+        ['send', sessionId, 'Run tests'],
+      ],
+      phrases: [{ text: 'Run tests', count: 1 }],
+    },
+  );
 });

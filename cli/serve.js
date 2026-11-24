@@ -1,7 +1,7 @@
 // @ts-check
 // Starting the viewer server in this process.
 import { spawn } from 'node:child_process';
-import { mkdir, stat } from 'node:fs/promises';
+import { mkdir, readFile, stat } from 'node:fs/promises';
 import { homedir, uptime } from 'node:os';
 import { basename, join } from 'node:path';
 import { createVsCode, desktopVsCode } from '../server/vscode.js';
@@ -31,6 +31,7 @@ import { createHiddenPanes } from '../server/hidden-panes.js';
 import { createHiddenWorkspaces } from '../server/hidden-workspaces.js';
 import { createAgyConversations } from '../server/agy-conversations.js';
 import { agyProcessesAmong, agyStartedSessions, createAgyCheck, createAgyProcesses, processAlive } from '../server/agy-live.js';
+import { createAgyModels, readAgyModelsOutput } from '../server/agy-models.js';
 import { createWorkspaceIcons } from '../server/workspace-icons.js';
 import { createSessionIndex } from '../server/sessions.js';
 import { createTerminals } from '../server/terminal.js';
@@ -107,6 +108,11 @@ export async function serve({ port, about, palette, publicAddresses, herdr, clau
   const agyHere = await stat(agyHome).then((info) => info.isDirectory(), () => false);
   const agyCheck = createAgyCheck({ alive: processAlive, agyAmong: agyProcessesAmong, now: Date.now });
   const agyProcesses = createAgyProcesses({ home: agyHome, agyOnes: agyCheck.agyOnes });
+  // agy's available models and their effort levels: cached in memory, pre-warmed asynchronously when agy is installed;
+  // falls back to ~/.claude-code-webview/agy-models.txt when the viewer runs apart from agy (e.g. a separate container)
+  const agyModelsFile = join(stateDir, 'agy-models.txt');
+  const agyModels = agyHere ? createAgyModels({ read: () => readAgyModelsOutput(agyCommand), fallback: () => readFile(agyModelsFile, 'utf8').catch(() => '') }) : undefined;
+  if (agyModels !== undefined) void agyModels.list().catch(() => undefined);
   // the sessions open with no transcript yet: Claude Code's, and agy's runs before their first message
   const started = async () => [...startedSessions(await readRecords()), ...agyStartedSessions(await agyProcesses.open())];
   const index = createSessionIndex(join(claude, 'projects'), { summaryBudgetMs: 1500, missRetryMs: 2000, codexRoot: join(codexHome, 'sessions'), agy: createAgyConversations(agyHome), started });
@@ -151,7 +157,7 @@ export async function serve({ port, about, palette, publicAddresses, herdr, clau
             if (process.platform === 'win32' && desktopProgram !== undefined) bringForward(basename(desktopProgram).replace(/\.exe$/i, ''));
           },
         });
-  const server = await startServer({ index, host: '127.0.0.1', port, pollMs: 400, changesEveryMs: 2000, composer, bookmarks: createBookmarkFile(join(stateDir, 'bookmarks.json')), checks: createCheckFile(join(stateDir, 'checks.json')), later: createLaterFile(join(stateDir, 'later.json')), desks, pins: createPinsFile(join(stateDir, 'pins.json')), seen: createSeenFile(join(stateDir, 'seen.json'), { limit: 500 }), kept: createKeptFile(join(stateDir, 'kept.json'), { limit: 200 }), diagnostics: createDiagnosticsLog(join(stateDir, 'diagnostics.jsonl'), { maxBytes: 5_000_000 }), uploads: createUploads(join(stateDir, 'uploads')), promptFiles: createPromptFiles(join(stateDir, 'prompts')), about, palette, publicAddresses, herdrView, terminals, usage: () => readUsage(usageFiles), system: createLocalSystemUsage(), processes: createLocalProcesses(), chatgptUsage: () => readChatGptUsage(chatgptUsageFile, Date.now()), agyUsage: () => readAgyUsage(agyStatusLine, Date.now()), agyRewound: agyProcesses.rewound, phrases: createPhrasesFile(join(stateDir, 'phrases.json')), sessionStatus: async (id) => (await readSessionStatus(join(stateDir, 'session-status'), id)) ?? (await agyProcesses.statusOf(id)), isRunning: async (id) => latestRecords(await readRecords()).has(id) || (await codexThreads.holds(id)) || (await agyProcesses.holds(id)), editor: editor !== undefined ? (path, line) => openInEditor(editor, path, line) : systemEditor, fileManager: openInFileManager, commands: ({ agent, cwd }) => (agent === 'codex' ? codexCommands({ home: codexHome }) : agent === 'agy' ? agyCommands({ config: join(homedir(), '.gemini', 'config'), cwd }) : claudeCommands({ config: claude, cwd })), vscode: vscodeServer, codexInUse: async () => (await codexThreads.open()).length > 0 });
+  const server = await startServer({ index, host: '127.0.0.1', port, pollMs: 400, changesEveryMs: 2000, composer, bookmarks: createBookmarkFile(join(stateDir, 'bookmarks.json')), checks: createCheckFile(join(stateDir, 'checks.json')), later: createLaterFile(join(stateDir, 'later.json')), desks, pins: createPinsFile(join(stateDir, 'pins.json')), seen: createSeenFile(join(stateDir, 'seen.json'), { limit: 500 }), kept: createKeptFile(join(stateDir, 'kept.json'), { limit: 200 }), diagnostics: createDiagnosticsLog(join(stateDir, 'diagnostics.jsonl'), { maxBytes: 5_000_000 }), uploads: createUploads(join(stateDir, 'uploads')), promptFiles: createPromptFiles(join(stateDir, 'prompts')), about, palette, publicAddresses, herdrView, terminals, usage: () => readUsage(usageFiles), system: createLocalSystemUsage(), processes: createLocalProcesses(), chatgptUsage: () => readChatGptUsage(chatgptUsageFile, Date.now()), agyUsage: () => readAgyUsage(agyStatusLine, Date.now()), agyModels: agyModels === undefined ? async () => [] : agyModels.list, agyRewound: agyProcesses.rewound, phrases: createPhrasesFile(join(stateDir, 'phrases.json')), sessionStatus: async (id) => (await readSessionStatus(join(stateDir, 'session-status'), id)) ?? (await agyProcesses.statusOf(id)), isRunning: async (id) => latestRecords(await readRecords()).has(id) || (await codexThreads.holds(id)) || (await agyProcesses.holds(id)), editor: editor !== undefined ? (path, line) => openInEditor(editor, path, line) : systemEditor, fileManager: openInFileManager, commands: ({ agent, cwd }) => (agent === 'codex' ? codexCommands({ home: codexHome }) : agent === 'agy' ? agyCommands({ config: join(homedir(), '.gemini', 'config'), cwd }) : claudeCommands({ config: claude, cwd })), vscode: vscodeServer, codexInUse: async () => (await codexThreads.open()).length > 0 });
   const url = `http://127.0.0.1:${server.port}/`;
   console.log(`Claude Code Webview ${about.version}: ${url}`);
   for (const publicAddress of publicAddresses) console.log(`Also answers at ${publicAddress.origin}/ — keep it behind a login such as Cloudflare Access`);
