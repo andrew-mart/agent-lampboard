@@ -1,4 +1,4 @@
-# Claude Code Webview
+# Agent Lampboard
 
 [English version](README.md) · [Быстрый старт](#быстрый-старт) · [Что внутри](#что-внутри) · [Телефон и удалённый доступ](#5-удалённая-работа-и-мобильный-интерфейс) · [Настройка и параметры CLI](#настройка-и-параметры-cli)
 
@@ -9,7 +9,7 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshot-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/screenshot.png">
-  <img alt="Рабочее пространство Claude Code Webview" src="docs/screenshot-dark.png">
+  <img alt="Рабочее пространство Agent Lampboard" src="docs/screenshot-dark.png">
 </picture>
 
 <sub>Превью тем: <a href="docs/screenshot.png">Светлая тема</a> · <a href="docs/screenshot-dark.png">Тёмная тема</a></sub>
@@ -21,16 +21,16 @@
 Нужен **Node.js 22** или новее. Сборка не требуется — приложение работает прямо из исходников:
 
 ```bash
-git clone https://github.com/andrew-mart/claude-code-webview.git
-cd claude-code-webview
+git clone https://github.com/andrew-mart/agent-lampboard.git
+cd agent-lampboard
 npm install --omit=dev
-node bin/claude-code-webview.js
+node bin/agent-lampboard.js
 ```
 
 Откроется адрес `http://127.0.0.1:7788` (если сервер уже запущен, команда просто откроет вкладку браузера).
 
-- **Само по себе или в связке с `herdr`** — без `herdr` чтение сессий, дерево файлов, документы, заметки, диффы веток и закладки работают сами по себе. Чтобы отправлять промпты и управлять живыми вкладками, один раз запустите просмотрщик из панели [herdr](https://herdr.dev) — он сохранит путь к сокету в `~/.claude-code-webview/herdr.json`.
-- **Фоновый режим** (без окна терминала): `node bin/claude-code-webview.js --background` (управление: `--stop` и `--restart`).
+- **Само по себе или в связке с `herdr`** — без `herdr` чтение сессий, дерево файлов, документы, заметки, диффы веток и закладки работают сами по себе. Чтобы отправлять промпты и управлять живыми вкладками, один раз запустите просмотрщик из панели [herdr](https://herdr.dev) — он сохранит путь к сокету в `~/.agent-lampboard/herdr.json`.
+- **Фоновый режим** (без окна терминала): `node bin/agent-lampboard.js --background` (управление: `--stop` и `--restart`).
 
 *Интерфейс самой страницы — на английском языке.*
 
@@ -155,7 +155,7 @@ node bin/claude-code-webview.js
 4. **Включите проверку токена в туннеле** — в настройках маршрута включите [Protect with Access](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/origin-parameters/), чтобы `cloudflared` отклонял запросы без токена Access.
 5. **Запустите просмотрщик с `--public-url`**:
    ```bash
-   node bin/claude-code-webview.js --background --public-url https://viewer.example.com
+   node bin/agent-lampboard.js --background --public-url https://viewer.example.com
    ```
    Сервер отвечает только на `127.0.0.1` и явно указанные `--public-url`.
 
@@ -172,16 +172,16 @@ node bin/claude-code-webview.js
 
 - **Claude** — по умолчанию лимиты читаются из `~/.claude.json`. Чтобы видеть актуальные цифры после каждого ответа, добавьте в свою команду `statusline` сохранение `rate_limits`:
   ```bash
-  input=$(cat); echo "$input" | jq -c '.rate_limits // empty' > ~/.claude-code-webview/rate-limits.json
+  input=$(cat); echo "$input" | jq -c '.rate_limits // empty' > ~/.agent-lampboard/rate-limits.json
   ```
 - **ChatGPT / Codex** — лимиты Codex подхватываются автоматически; для GPT-шлюза можно передать путь к снимку квоты через `--chatgpt-usage-file <путь>`.
-- **Antigravity CLI (`agy`)** — сохраняйте `{ "model": ..., "quota": ... }` из stdin команды `statusLine` в `~/.claude-code-webview/agy-statusline.json`, чтобы в шапке появилась третья строка лимитов.
-- **Модель и контекст сессии** — statusline может писать метаданные активной сессии в `~/.claude-code-webview/session-status/<session-uuid>.json` (`{ "at": <мс>, "model": "<id>", "contextTokens": 64000, "contextWindow": 1000000, "effort": "high" }`).
+- **Antigravity CLI (`agy`)** — сохраняйте `{ "model": ..., "quota": ... }` из stdin команды `statusLine` в `~/.agent-lampboard/agy-statusline.json`, чтобы в шапке появилась третья строка лимитов.
+- **Модель и контекст сессии** — statusline может писать метаданные активной сессии в `~/.agent-lampboard/session-status/<session-uuid>.json` (`{ "at": <мс>, "model": "<id>", "contextTokens": 64000, "contextWindow": 1000000, "effort": "high" }`).
 
 #### Запуск через `ccproxy` (`Claude GPT`)
 
 ```bash
-node bin/claude-code-webview.js --claude-gpt-command my-claude-gpt
+node bin/agent-lampboard.js --claude-gpt-command my-claude-gpt
 ```
 
 При создании вкладки или воркспейса появится выбор между **Claude Code** и **Claude GPT**, а в шапке активной сессии — кнопка **Restart in Claude GPT** / **Restart in Claude Code** для переключения на лету.
@@ -196,7 +196,7 @@ node bin/claude-code-webview.js --claude-gpt-command my-claude-gpt
 | Параметр | Что делает |
 | --- | --- |
 | *(без параметров)* | Запустить сервер на `127.0.0.1:7788` и открыть браузер (`Ctrl+C` останавливает) |
-| `--background`, `-b` | Запустить в фоне без окна терминала (лог: `~/.claude-code-webview/server.log`) |
+| `--background`, `-b` | Запустить в фоне без окна терминала (лог: `~/.agent-lampboard/server.log`) |
 | `--stop` / `--restart` | Остановить или перезапустить фоновый просмотрщик |
 | `--port <порт>`, `-p` | Порт на `127.0.0.1` (по умолчанию `7788`) |
 | `--palette <имя>` | Цветовая палитра интерфейса и иконки: `clay` (по умолчанию), `sea`, `moss`, `plum` |

@@ -1,4 +1,4 @@
-# Claude Code Webview
+# Agent Lampboard
 
 [Русская версия](README.ru.md) · [Quick start](#quick-start) · [What's inside](#whats-inside) · [Mobile & remote](#remote-work-and-mobile-ui) · [Configuration & CLI](#configuration-and-cli-options)
 
@@ -9,7 +9,7 @@ Instead of juggling separate terminal tabs, document windows, and a background I
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshot-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/screenshot.png">
-  <img alt="Claude Code Webview workspace" src="docs/screenshot-dark.png">
+  <img alt="Agent Lampboard workspace" src="docs/screenshot-dark.png">
 </picture>
 
 <sub>Theme previews: <a href="docs/screenshot.png">Light theme</a> · <a href="docs/screenshot-dark.png">Dark theme</a></sub>
@@ -21,16 +21,16 @@ Instead of juggling separate terminal tabs, document windows, and a background I
 Requires **Node.js 22** or newer. Runs directly from source with no build step:
 
 ```bash
-git clone https://github.com/andrew-mart/claude-code-webview.git
-cd claude-code-webview
+git clone https://github.com/andrew-mart/agent-lampboard.git
+cd agent-lampboard
 npm install --omit=dev
-node bin/claude-code-webview.js
+node bin/agent-lampboard.js
 ```
 
 Opens `http://127.0.0.1:7788` in your browser (if already running, it simply opens a tab).
 
-- **Standalone or with `herdr`** — without `herdr`, session reading, project files, documents, notes, whole-branch diffs, and bookmarks all work on their own. To drive live sessions, start the viewer once from inside a [herdr](https://herdr.dev) pane (it saves the socket path in `~/.claude-code-webview/herdr.json` for future launches).
-- **Background mode** (no terminal window): `node bin/claude-code-webview.js --background` (`--stop` and `--restart` to manage).
+- **Standalone or with `herdr`** — without `herdr`, session reading, project files, documents, notes, whole-branch diffs, and bookmarks all work on their own. To drive live sessions, start the viewer once from inside a [herdr](https://herdr.dev) pane (it saves the socket path in `~/.agent-lampboard/herdr.json` for future launches).
+- **Background mode** (no terminal window): `node bin/agent-lampboard.js --background` (`--stop` and `--restart` to manage).
 
 ---
 
@@ -153,7 +153,7 @@ You can reach your workspace from a phone or another laptop without renting a VP
 4. **Verify tokens in `cloudflared`** — enable [Protect with Access](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/origin-parameters/) on the tunnel route so `cloudflared` rejects requests without a valid Access token.
 5. **Pass `--public-url` to the viewer**:
    ```bash
-   node bin/claude-code-webview.js --background --public-url https://viewer.example.com
+   node bin/agent-lampboard.js --background --public-url https://viewer.example.com
    ```
    The server only answers requests matching `127.0.0.1` or an explicit `--public-url`.
 
@@ -168,18 +168,18 @@ On iPhone, add the page to the Home Screen (Safari: Share → Add to Home Screen
 
 #### Live rate-limit snapshots
 
-- **Claude** — by default the viewer reads `~/.claude.json`. For live numbers after every turn, have your Claude Code `statusline` command write `rate_limits` to `~/.claude-code-webview/rate-limits.json`:
+- **Claude** — by default the viewer reads `~/.claude.json`. For live numbers after every turn, have your Claude Code `statusline` command write `rate_limits` to `~/.agent-lampboard/rate-limits.json`:
   ```bash
-  input=$(cat); echo "$input" | jq -c '.rate_limits // empty' > ~/.claude-code-webview/rate-limits.json
+  input=$(cat); echo "$input" | jq -c '.rate_limits // empty' > ~/.agent-lampboard/rate-limits.json
   ```
 - **ChatGPT / Codex** — Codex usage is read automatically; if you also use a GPT gateway, pass `--chatgpt-usage-file <path>` pointing to a JSON snapshot (`{ "at": <ms>, "status": 200, "limits": { "five_hour": { "used_percentage": 28, "resets_at": <sec> }, "seven_day": { ... } } }`).
-- **Antigravity CLI (`agy`)** — have your `agy` `statusLine` command write `{ "model": ..., "quota": ... }` from stdin to `~/.claude-code-webview/agy-statusline.json` to display the third usage row in the sidebar header.
-- **Session model and context telemetry** — a gateway or `agy` statusline can also write live session metadata to `~/.claude-code-webview/session-status/<session-uuid>.json` (`{ "at": <ms>, "model": "<id>", "contextTokens": 64000, "contextWindow": 1000000, "effort": "high" }`).
+- **Antigravity CLI (`agy`)** — have your `agy` `statusLine` command write `{ "model": ..., "quota": ... }` from stdin to `~/.agent-lampboard/agy-statusline.json` to display the third usage row in the sidebar header.
+- **Session model and context telemetry** — a gateway or `agy` statusline can also write live session metadata to `~/.agent-lampboard/session-status/<session-uuid>.json` (`{ "at": <ms>, "model": "<id>", "contextTokens": 64000, "contextWindow": 1000000, "effort": "high" }`).
 
 #### Running Claude Code through a GPT gateway (`ccproxy`)
 
 ```bash
-node bin/claude-code-webview.js --claude-gpt-command my-claude-gpt
+node bin/agent-lampboard.js --claude-gpt-command my-claude-gpt
 ```
 
 New tabs and workspaces offer both **Claude Code** and **Claude GPT**, and any active session's details panel includes **Restart in Claude GPT** / **Restart in Claude Code** to switch modes in place.
@@ -194,7 +194,7 @@ New tabs and workspaces offer both **Claude Code** and **Claude GPT**, and any a
 | Option | What it does |
 | --- | --- |
 | *(no options)* | Start on `127.0.0.1:7788` and open the browser (`Ctrl+C` stops) |
-| `--background`, `-b` | Start in the background without a terminal window (log: `~/.claude-code-webview/server.log`) |
+| `--background`, `-b` | Start in the background without a terminal window (log: `~/.agent-lampboard/server.log`) |
 | `--stop` / `--restart` | Stop or restart the background viewer |
 | `--port <port>`, `-p` | Listen port on `127.0.0.1` (default: `7788`) |
 | `--palette <name>` | Accent color and app icon palette: `clay` (default), `sea`, `moss`, `plum` |
