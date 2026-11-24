@@ -253,3 +253,52 @@ test('agyCheck_Should_TakeAPidHerdrVouchesFor_AsAgysAtOnce', () => {
 
   assert.deepEqual([before, vouched, gone], [[], [21], []]);
 });
+
+// Before its first message an agy run has no conversation id, so no statusline file exists for it yet; its log tells
+// the model and effort selected — updated as /model switches them — and keeps non-effort parentheticals in the name.
+// The same log also supplies a fallback for an open conversation; ended or dead runs report nothing
+test('agyProcesses_Should_TellSelectedModelAndEffort_ForFreshRunAndOpenConversation_FromItsLog', async () => {
+  const home = tempDir('ccw-agy-model-');
+  await mkdir(join(home, 'log'));
+  const runLog = (/** @type {number} */ pid, /** @type {string} */ folder, /** @type {readonly string[]} */ more) =>
+    [`I1124 12:10:13.639086 82 server.go:2543] Starting language server process with pid ${pid}`, `I1124 12:10:13.693459 1 server.go:313] Creating CLI server backend: product=antigravity workspaceDirs=[${folder}] appDataDir=x`, ...more].join('\n');
+  const selected = (/** @type {string} */ when, /** @type {string} */ label) => `I${when} 283 model_config_manager.go:375] Propagating selected model override to backend: label="${label}"`;
+
+  await writeFile(join(home, 'log', 'cli-20261124_121013.log'), runLog(201, 'D:\\dev\\fresh', [selected('1124 12:10:15.244249', 'Gemini 4 Argon (High)'), selected('1124 12:11:40.267012', 'Gemini 4 Neon (XHigh)')]));
+  await writeFile(join(home, 'log', 'cli-20261124_121200.log'), runLog(202, 'D:\\dev\\orch', [selected('1124 12:12:02.500000', 'Orchestrator (Neon)')]));
+  await writeFile(join(home, 'log', 'cli-20261124_121300.log'), runLog(203, 'D:\\dev\\shop', [selected('1124 12:13:01.100000', 'GPT-OSS 120B (Medium)'), `I1124 12:13:10.000000 1126 conversation_manager.go:1107] Streaming conversation ${first}`]));
+  await writeFile(join(home, 'log', 'cli-20261231_235000.log'), runLog(204, 'D:\\dev\\turn', [selected('0101 00:01:02.345000', 'Claude Opus 5.5 (Low)')]));
+  await writeFile(join(home, 'log', 'cli-20261124_120000.log'), runLog(205, 'D:\\dev\\closed', [selected('1124 12:00:02.000000', 'Gemini 4 Carbon (High)'), 'I1124 12:05:00.000000 5424 server.go:4046] Language server shutting down']));
+  await writeFile(join(home, 'log', 'cli-20261124_120100.log'), runLog(206, 'D:\\dev\\dead', [selected('1124 12:01:02.000000', 'Gemini 4 Carbon (High)')]));
+
+  const processes = createAgyProcesses({ home, agyOnes: (pids) => new Set(pids.filter((pid) => pid !== 206)) });
+  const idOf = (/** @type {number} */ serverPid, /** @type {number} */ year, /** @type {number} */ month, /** @type {number} */ day, /** @type {number} */ h, /** @type {number} */ m, /** @type {number} */ s) =>
+    agyStartedId({ serverPid, folder: 'x', conversation: undefined, print: false, ended: false, startedAt: new Date(year, month - 1, day, h, m, s).getTime() });
+
+  const freshId = idOf(201, 2026, 11, 24, 12, 10, 13);
+  const orchId = idOf(202, 2026, 11, 24, 12, 12, 0);
+  const turnId = idOf(204, 2026, 12, 31, 23, 50, 0);
+  const closedId = idOf(205, 2026, 11, 24, 12, 0, 0);
+  const deadId = idOf(206, 2026, 11, 24, 12, 1, 0);
+
+  assert.deepEqual(
+    {
+      fresh: await processes.statusOf(freshId),
+      orch: await processes.statusOf(orchId),
+      openConversation: await processes.statusOf(first),
+      yearTurn: await processes.statusOf(turnId),
+      closed: await processes.statusOf(closedId),
+      dead: await processes.statusOf(deadId),
+      unknown: await processes.statusOf(other),
+    },
+    {
+      fresh: { at: new Date(2026, 10, 24, 12, 11, 40, 267).getTime(), model: 'Gemini 4 Neon', effort: 'xhigh' },
+      orch: { at: new Date(2026, 10, 24, 12, 12, 2, 500).getTime(), model: 'Orchestrator (Neon)' },
+      openConversation: { at: new Date(2026, 10, 24, 12, 13, 1, 100).getTime(), model: 'GPT-OSS 120B', effort: 'medium' },
+      yearTurn: { at: new Date(2027, 0, 1, 0, 1, 2, 345).getTime(), model: 'Claude Opus 5.5', effort: 'low' },
+      closed: undefined,
+      dead: undefined,
+      unknown: undefined,
+    },
+  );
+});

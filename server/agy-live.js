@@ -10,6 +10,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { parseSessionStatus } from '../public/model/session-status.js';
 import { folderKey } from './folders.js';
 
 /**
@@ -22,8 +23,9 @@ import { folderKey } from './folders.js';
  * @typedef {AgyProcess & { startedAt: number }} AgyRun — an agy run alive: startedAt, when, in ms — its log is named so
  * @typedef {{ step: number, at: number }} AgyRewind — agy rewound a conversation to a step: the steps after it are gone
  *   from it, though its transcript keeps them until the next message; at — when, in ms
- * @typedef {{ stamp: string, process: AgyProcess | undefined, rewinds: (AgyRewind & { conversation: string })[] }} ReadLog
- *   — what a run's log tells, as the file was when read: stamp, its time and size then
+ * @typedef {{ stamp: string, process: AgyProcess | undefined, rewinds: (AgyRewind & { conversation: string })[], status: import('../public/model/session-status.js').SessionStatus | undefined }} ReadLog
+ *   — what a run's log tells, as the file was when read: stamp, its time and size then; status, the latest model and
+ *   effort selected in that run
  */
 
 /**
@@ -85,23 +87,53 @@ export function agyProcessOf(log) {
  * computer's time — which, to which step.
  */
 const revertedLine = /^I(\d{2})(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d{3})\d*\s.*\] Reverted conversation ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) to step (\d+)\b/gm;
+/** The model and effort agy selected for its run — logged at startup and whenever /model switches them. */
+const selectedModelLine = /^I(\d{2})(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d{3})\d*\s.*\] Propagating selected model override to backend: label="([^"]+)"/gm;
+/** Trailing effort tag in an agy model label — e.g. "Gemini 4 Neon (XHigh)"; other parentheticals stay in the name. */
+const trailingEffort = /^(.*?)\s*\((low|medium|high|xhigh|max)\)\s*$/i;
 const dayMs = 86_400_000;
 
 /**
- * The rewinds a run's log tells, in its order: its lines tell the month and the day alone — of the year the run
- * started in, or of the next one, once the year turned while it ran.
+ * A log line's time in ms: its prefix tells the month and day alone — of the year the run started in, or of the next
+ * one once the year turned while it ran.
+ * @param {RegExpExecArray} match — groups 1..6: MM, DD, hh, mm, ss, ms
+ * @param {number} startedAt — when the run started, in ms
+ */
+function logTimestamp(match, startedAt) {
+  const year = new Date(startedAt).getFullYear();
+  const [month = 1, day = 1, hours = 0, minutes = 0, seconds = 0, ms = 0] = match.slice(1, 7).map(Number);
+  const inYear = (/** @type {number} */ one) => new Date(one, month - 1, day, hours, minutes, seconds, ms).getTime();
+  return inYear(year) < startedAt - dayMs ? inYear(year + 1) : inYear(year);
+}
+
+/**
+ * The rewinds a run's log tells, in its order.
  * @param {string} log — a run's, whole
  * @param {number} startedAt — when the run started, in ms
  * @returns {(AgyRewind & { conversation: string })[]}
  */
 function rewindsOf(log, startedAt) {
-  const year = new Date(startedAt).getFullYear();
   return [...log.matchAll(revertedLine)].flatMap((match) => {
-    const [month = 1, day = 1, hours = 0, minutes = 0, seconds = 0, ms = 0] = match.slice(1, 7).map(Number);
-    const inYear = (/** @type {number} */ one) => new Date(one, month - 1, day, hours, minutes, seconds, ms).getTime();
     const conversation = match[7];
-    return conversation === undefined ? [] : [{ conversation, step: Number(match[8]), at: inYear(year) < startedAt - dayMs ? inYear(year + 1) : inYear(year) }];
+    return conversation === undefined ? [] : [{ conversation, step: Number(match[8]), at: logTimestamp(match, startedAt) }];
   });
+}
+
+/**
+ * The latest model and effort selected in an agy run, as its log tells it; none if the log names no model yet.
+ * @param {string} log — a run's, whole
+ * @param {number} startedAt — when the run started, in ms
+ * @returns {import('../public/model/session-status.js').SessionStatus | undefined}
+ */
+function selectedModelOf(log, startedAt) {
+  const latest = [...log.matchAll(selectedModelLine)].at(-1);
+  const label = latest?.[7]?.trim();
+  if (latest === undefined || label === undefined || label === '') return undefined;
+  const parts = trailingEffort.exec(label);
+  const named = parts?.[1]?.trim();
+  const model = named !== undefined && named !== '' ? named : label;
+  const effort = named !== undefined && named !== '' ? parts?.[2]?.toLowerCase() : undefined;
+  return parseSessionStatus({ at: logTimestamp(latest, startedAt), model, ...(effort === undefined ? {} : { effort }) });
 }
 
 /** The processes found are told again for this long: the feed asks whether its conversation is open several times a second. */
@@ -112,7 +144,8 @@ const latestLogs = 300;
 /**
  * agy's processes alive now, from the latest runs' logs: each read once, and again once it has grown; a run whose log
  * tells it ended, or whose language server is no longer agy's — gone, or its pid given to another program — has ended.
- * The same logs tell the conversations agy rewound, a run's ended or not.
+ * The same logs tell the conversations agy rewound, a run's ended or not, and the model and effort selected in each
+ * living run — before its first message too, when no statusline file exists yet.
  * @param {{ home: string, agyOnes: (pids: readonly number[]) => ReadonlySet<number> }} deps — home: agy's,
  *   ~/.gemini/antigravity-cli; agyOnes: which of these pids are agy's processes now (createAgyCheck)
  */
@@ -120,7 +153,7 @@ export function createAgyProcesses({ home, agyOnes }) {
   /** Each log read, by its path. */
   /** @type {Map<string, ReadLog>} */
   const read = new Map();
-  /** @type {{ at: number, found: Promise<{ runs: AgyRun[], rewinds: (AgyRewind & { conversation: string })[] }> } | undefined} */
+  /** @type {{ at: number, found: Promise<{ runs: AgyRun[], rewinds: (AgyRewind & { conversation: string })[], statuses: ReadonlyMap<string, import('../public/model/session-status.js').SessionStatus> }> } | undefined} */
   let last;
 
   const look = async () => {
@@ -137,12 +170,22 @@ export function createAgyProcesses({ home, agyOnes }) {
         const known = read.get(path);
         const told = known?.stamp === stamp ? known : logOf(await readFile(path, 'utf8').catch(() => ''), stamp, startedAt);
         read.set(path, told);
-        return { runs: told.process === undefined ? [] : [{ ...told.process, startedAt }], rewinds: told.rewinds };
+        return { runs: told.process === undefined ? [] : [{ run: { ...told.process, startedAt }, status: told.status }], rewinds: told.rewinds };
       }),
     );
-    const runs = logged.flatMap((one) => one.runs).filter((run) => !run.ended);
-    const agys = agyOnes(runs.map((run) => run.serverPid));
-    return { runs: runs.filter((run) => agys.has(run.serverPid)), rewinds: logged.flatMap((one) => one.rewinds) };
+    const live = logged.flatMap((one) => one.runs).filter(({ run }) => !run.ended);
+    const agys = agyOnes(live.map(({ run }) => run.serverPid));
+    const alive = live.filter(({ run }) => agys.has(run.serverPid));
+    /** @type {Map<string, import('../public/model/session-status.js').SessionStatus>} */
+    const statuses = new Map();
+    for (const { run, status } of alive) {
+      if (status === undefined) continue;
+      const key = run.conversation ?? (run.print || run.folder === undefined ? undefined : agyStartedId(run));
+      if (key === undefined) continue;
+      const prev = statuses.get(key);
+      if (prev === undefined || status.at >= prev.at) statuses.set(key, status);
+    }
+    return { runs: alive.map(({ run }) => run), rewinds: logged.flatMap((one) => one.rewinds), statuses };
   };
 
   const found = () => {
@@ -172,6 +215,13 @@ export function createAgyProcesses({ home, agyOnes }) {
       const latest = (await found()).rewinds.filter((rewind) => rewind.conversation === conversation).sort((a, b) => a.at - b.at).at(-1);
       return latest === undefined ? undefined : { step: latest.step, at: latest.at };
     },
+    /**
+     * The model and effort an agy run has selected, as its log tells: for a run before its first message (by
+     * agyStartedId), and as a fallback for an open conversation before a status line writes its file.
+     * @param {string} id — a conversation id, or agyStartedId(run)
+     * @returns {Promise<import('../public/model/session-status.js').SessionStatus | undefined>}
+     */
+    statusOf: async (id) => (await found()).statuses.get(id),
   };
 }
 
@@ -183,7 +233,7 @@ export function createAgyProcesses({ home, agyOnes }) {
  * @returns {ReadLog}
  */
 function logOf(log, stamp, startedAt) {
-  return { stamp, process: agyProcessOf(log), rewinds: rewindsOf(log, startedAt) };
+  return { stamp, process: agyProcessOf(log), rewinds: rewindsOf(log, startedAt), status: selectedModelOf(log, startedAt) };
 }
 
 /** A pid the system told agy's — or not — is believed so this long while it lives; then the system is asked again. */
