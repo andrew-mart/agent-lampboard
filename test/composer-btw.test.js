@@ -275,6 +275,53 @@ test('composer_Should_SendCodexsLastQueuedMessageNow_ByItsButton', async () => {
   );
 });
 
+// What agy queued shows above the box with agy's note, and its Send now button flushes the queue immediately
+// (empty text with now: true); nothing queued, nothing shown
+test('composer_Should_ShowWhatAgyQueued_AndSendItNow_ByItsButton', async () => {
+  /** @type {string[]} */
+  const posted = [];
+  /** @param {readonly string[]} queued */
+  const open = async (queued, clickNow = false) => {
+    Object.assign(globalThis, {
+      matchMedia: () => ({ matches: false }),
+      fetch: async (/** @type {string} */ path, /** @type {RequestInit | undefined} */ init) => {
+        if (path === '/api/send') {
+          posted.push(String(init?.body));
+          return new Response(JSON.stringify({ ok: true, pane: 'w2:p1' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response(JSON.stringify({ state: 'live', status: 'busy', pane: 'w2:p1', queued }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      },
+    });
+    const composer = createComposer(sessionId, { agent: 'agy', focusBox: 'no', placeOf: () => undefined, asides: createAsideStore(), onSent: () => undefined, onDialog: () => undefined });
+    window.document.body.append(composer.element);
+    await settle();
+    const list = composer.element.querySelector('.composer-queued');
+    const items = list instanceof window.HTMLElement && !list.hidden ? [...list.querySelectorAll('li .composer-queued-text')].map((item) => item.textContent) : [];
+    const note = list?.querySelector('.composer-queued-note')?.textContent;
+    const buttons = [...composer.element.querySelectorAll('.composer-queued li')].map((item) => item.querySelector('button.composer-queued-now') !== null);
+    if (clickNow) {
+      const now = composer.element.querySelector('.composer-queued li:last-child button.composer-queued-now');
+      if (now instanceof window.HTMLButtonElement) now.click();
+      await settle();
+    }
+    composer.dispose();
+    composer.element.remove();
+    return { items, note, buttons };
+  };
+
+  const shown = await open(['Use no_proxy', 'Also save JSON'], true);
+  const empty = await open([]);
+
+  assert.deepEqual(
+    { shown, empty: empty.items, posted: posted.map((body) => JSON.parse(body)).map(({ text, now: sentNow }) => ({ text, now: sentNow })) },
+    {
+      shown: { items: ['Use no_proxy', 'Also save JSON'], note: 'agy sends these next, once its turn is over.', buttons: [false, true] },
+      empty: [],
+      posted: [{ text: '', now: true }],
+    },
+  );
+});
+
 /**
  * The page's box for the session, over a viewer whose /api/btw replies come as given — none: the request lost — each
  * request's body recorded.

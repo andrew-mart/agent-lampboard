@@ -36,7 +36,7 @@ function fakeHerdr({ asking, takes = Number.POSITIVE_INFINITY, scrolled, panel }
       return { ok: true, json: undefined, text: asking === true ? permission : inView ? banner.join('\n') : panel !== undefined ? [agyScreen(box), ...panel].join('\n') : agyScreen(box) };
     }
     if ((command === 'send-text' || command === 'paste-text') && argument !== undefined) coming += argument;
-    if (command === 'send-keys' && keys.includes('enter')) box = '';
+    if (command === 'send-keys' && (keys.includes('enter') || keys.includes('alt+m'))) box = '';
     changes.push(`${command} ${pane} ${keys.join(' ')}`);
     return { ok: true, json: { result: { type: 'ok' } }, text: '' };
   };
@@ -82,9 +82,9 @@ test('liveState_Should_FindAgyConversationInItsPane_WithWhatAgyAsks_OrTellItRuns
 });
 
 // A prompt goes into agy's box and in with Enter, whether agy works or not — agy queues one that comes while it works;
-// sent now, the same; a stop is Esc, as in its terminal. The prompt goes in as a paste: typed, agy takes it a few
-// characters at a time
-test('send_sendNow_And_interrupt_Should_TypePromptIntoAgyWithEnter_AndStopItWithEsc', async () => {
+// sent now while agy works, it goes in with alt+m (agy's immediate send); a stop is Esc, as in its terminal. The prompt
+// goes in as a paste: typed, agy takes it a few characters at a time
+test('send_sendNow_And_interrupt_Should_TypePromptIntoAgyWithEnter_SendNowWithAltM_AndStopItWithEsc', async () => {
   const idle = fakeHerdr();
   const busy = fakeHerdr();
 
@@ -100,7 +100,7 @@ test('send_sendNow_And_interrupt_Should_TypePromptIntoAgyWithEnter_AndStopItWith
     {
       outcomes: [{ ok: true, pane: 'w2:p1' }, { ok: true, pane: 'w2:p1' }, { ok: true, pane: 'w2:p1' }, { ok: true, pane: 'w2:p1', prompt: undefined }],
       idle: ['paste-text w2:p1 Add the price filter', 'send-keys w2:p1 enter'],
-      busy: ['paste-text w2:p1 Then cover it with a test', 'send-keys w2:p1 enter', 'paste-text w2:p1 Keep the old sort', 'send-keys w2:p1 enter', 'send-keys w2:p1 esc'],
+      busy: ['paste-text w2:p1 Then cover it with a test', 'send-keys w2:p1 enter', 'paste-text w2:p1 Keep the old sort', 'send-keys w2:p1 alt+m', 'send-keys w2:p1 esc'],
     },
   );
 });
@@ -203,6 +203,90 @@ test('send_btw_And_rewind_Should_TypeNothingIntoAgy_WhileItAsks_OrForWhatAgyHasN
         { ok: false, error: 'option-not-found' },
       ],
       typed: [],
+    },
+  );
+});
+
+// Messages queued in agy while it works come back in liveState.queued; sendNow with an empty box presses alt+m to flush
+// them into the current turn, or returns empty when nothing is queued
+test('liveState_And_sendNow_Should_ExposeAgyQueuedMessages_AndFlushThemWithAltM_WhenBoxIsEmpty', async () => {
+  /** @param {readonly string[]} initial */
+  const queuedHerdr = (initial) => {
+    let sending = false;
+    /** @type {string[]} */
+    const changes = [];
+    /** @param {readonly string[]} args @returns {Promise<import('../server/composer.js').HerdrReply>} */
+    const run = async (args) => {
+      const [, command, pane] = args;
+      const keys = args.slice(3);
+      if (command === 'list') return { ok: true, json: { result: { panes: [{ agent: 'agy', pane_id: 'w2:p1' }] } }, text: '' };
+      if (command === 'read') {
+        const queuedLines = initial.length === 0
+          ? []
+          : sending
+            ? [...initial.map((item) => `▸ ${item}`), '  ⎿  Sending to agent...']
+            : initial.map((item, at) => (at === initial.length - 1 ? `▸ ${item} (alt+m to send immediately)` : `▸ ${item}`));
+        const footer = initial.length === 0 ? `esc to cancel${' '.repeat(25)}Gemini 4 Neon · xhigh` : `  Press up to edit queued messages${' '.repeat(10)}Gemini 4 Neon · xhigh`;
+        return { ok: true, json: undefined, text: [...banner, '⢿  Generating...', ...queuedLines, rule, '>', rule, footer].join('\n') };
+      }
+      if (command === 'send-keys' && keys.includes('alt+m')) sending = true;
+      changes.push(`${command} ${pane} ${keys.join(' ')}`);
+      return { ok: true, json: { result: { type: 'ok' } }, text: '' };
+    };
+    return { run, changes };
+  };
+
+  const withQueue = queuedHerdr(['Use no_proxy for browser', 'Also save raw JSON']);
+  const withoutQueue = queuedHerdr([]);
+  const busy = /** @type {const} */ ({ found: 'pane', pane: 'w2:p1', working: true });
+  const composerWithQueue = createComposer({ readRecords: async () => [], herdr: withQueue.run, codexPlace: async () => ({ found: 'none' }), agyPlace: async () => busy });
+  const composerWithoutQueue = createComposer({ readRecords: async () => [], herdr: withoutQueue.run, codexPlace: async () => ({ found: 'none' }), agyPlace: async () => busy });
+
+  const liveBefore = await composerWithQueue.liveState(conversation);
+  const flushed = await composerWithQueue.sendNow(conversation, '');
+  const liveAfter = await composerWithQueue.liveState(conversation);
+  const emptyOutcome = await composerWithoutQueue.sendNow(conversation, '');
+
+  assert.deepEqual(
+    {
+      queuedBefore: liveBefore.state === 'live' ? liveBefore.queued : undefined,
+      flushed,
+      queuedAfter: liveAfter.state === 'live' ? liveAfter.queued : undefined,
+      pressed: withQueue.changes,
+      emptyOutcome,
+      emptyPressed: withoutQueue.changes,
+    },
+    {
+      queuedBefore: ['Use no_proxy for browser', 'Also save raw JSON'],
+      flushed: { ok: true, pane: 'w2:p1' },
+      queuedAfter: [],
+      pressed: ['send-keys w2:p1 alt+m'],
+      emptyOutcome: { ok: false, error: 'empty' },
+      emptyPressed: [],
+    },
+  );
+});
+
+// When agy's settings.json has queuedMessages set to "send-immediately", Enter sends immediately and alt+m queues:
+// while agy works, send uses alt+m and sendNow uses enter; while idle, Enter always sends
+test('send_And_sendNow_Should_SwapEnterAndAltM_WhenAgyIsInSendImmediatelyMode', async () => {
+  const busyHerdr = fakeHerdr();
+  const idleHerdr = fakeHerdr();
+  const busy = /** @type {const} */ ({ found: 'pane', pane: 'w2:p1', working: true });
+  const idle = /** @type {const} */ ({ found: 'pane', pane: 'w2:p1', working: false });
+  const mode = async () => /** @type {const} */ ('send-immediately');
+  const busyComposer = createComposer({ readRecords: async () => [], herdr: busyHerdr.run, codexPlace: async () => ({ found: 'none' }), agyPlace: async () => busy, agyQueuedMode: mode });
+  const idleComposer = createComposer({ readRecords: async () => [], herdr: idleHerdr.run, codexPlace: async () => ({ found: 'none' }), agyPlace: async () => idle, agyQueuedMode: mode });
+
+  await busyComposer.send(conversation, 'Queue this one');
+  await busyComposer.sendNow(conversation, 'Send this right away');
+  await idleComposer.send(conversation, 'Idle message');
+
+  assert.deepEqual(
+    { busy: busyHerdr.changes, idle: idleHerdr.changes },
+    {
+      busy: ['paste-text w2:p1 Queue this one', 'send-keys w2:p1 alt+m', 'paste-text w2:p1 Send this right away', 'send-keys w2:p1 enter'],
+      idle: ['paste-text w2:p1 Idle message', 'send-keys w2:p1 enter'],
     },
   );
 });

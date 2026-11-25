@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tempDir } from '../test-support/temp-dir.js';
-import { agyPanes, agyPidsListed, agyProcessOf, agyStartedId, agyStartedSessions, createAgyCheck, createAgyProcesses } from '../server/agy-live.js';
+import { agyPanes, agyPidsListed, agyProcessOf, agyStartedId, agyStartedSessions, createAgyCheck, createAgyProcesses, readAgyQueuedMode } from '../server/agy-live.js';
 
 /** The lines of agy's log a process starts with: its language server, its folder. */
 const started = [
@@ -300,5 +300,30 @@ test('agyProcesses_Should_TellSelectedModelAndEffort_ForFreshRunAndOpenConversat
       dead: undefined,
       unknown: undefined,
     },
+  );
+});
+
+// agy's queuedMessages setting in <home>/settings.json tells whether Enter queues ("queue", the default) or sends
+// immediately ("send-immediately", with Alt+M swapped); a BOM, missing file, omitted key or malformed JSON all settle cleanly
+test('readAgyQueuedMode_Should_ReadQueuedMessagesSetting_AndDefaultToQueue', async () => {
+  const immediate = tempDir('ccw-agy-mode-imm-');
+  const queued = tempDir('ccw-agy-mode-q-');
+  const omitted = tempDir('ccw-agy-mode-omit-');
+  const malformed = tempDir('ccw-agy-mode-bad-');
+  const missing = tempDir('ccw-agy-mode-none-');
+  await writeFile(join(immediate, 'settings.json'), '\uFEFF{"queuedMessages":"send-immediately"}');
+  await writeFile(join(queued, 'settings.json'), '{"queuedMessages":"queue"}');
+  await writeFile(join(omitted, 'settings.json'), '{"theme":"dark"}');
+  await writeFile(join(malformed, 'settings.json'), '{not json');
+
+  assert.deepEqual(
+    [
+      await readAgyQueuedMode(immediate),
+      await readAgyQueuedMode(queued),
+      await readAgyQueuedMode(omitted),
+      await readAgyQueuedMode(malformed),
+      await readAgyQueuedMode(missing),
+    ],
+    ['send-immediately', 'queue', 'queue', 'queue', 'queue'],
   );
 });

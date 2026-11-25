@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { agyDialog, agyInputBox } from '../server/agy-screen.js';
+import { agyDialog, agyInputBox, agyQueued } from '../server/agy-screen.js';
 
 const banner = ['      ▄▀▀▄        Antigravity CLI 1.5.4', '     ▀▀▀▀▀▀       ann@example.com (Google AI Pro)', '    ▀▀▀▀▀▀▀▀      Gemini 4 Argon (High)', '   ▄▀▀    ▀▀▄     ~/shop', '  ▄▀▀      ▀▀▄', ''];
 const rule = '─'.repeat(60);
@@ -253,4 +253,63 @@ test('agyModel_Should_ReadTheModelsAndTheChosenOnesEffort_AsWhatAgyAsks_TheBoxTa
     ],
     boxes: [undefined, undefined],
   });
+});
+
+// Messages queued in agy while it works appear directly above its prompt box (`▸ ...`) with the `Press up to edit
+// queued messages` footer under the box; once alt+m starts sending them (`⎿  Sending to agent...`) they are no longer
+// queued, and collapsed thought rows (`▸ Thought for ...`) in the transcript are never mistaken for queued messages
+test('agyQueued_Should_ReadQueuedMessagesOverBox_IgnoringSendingAndThoughtLines', () => {
+  const twoQueued = screenOf([
+    '⢿  Generating...',
+    '└ Tip: Press esc to interrupt generation.',
+    '▸ first queued message',
+    '▸ second queued message (alt+m to send immediately)',
+    rule,
+    '>',
+    rule,
+    '  Press up to edit queued messages                                 Gemini 4 Neon · xhigh',
+  ]);
+  const sendingNow = screenOf([
+    '⢿  Running command...',
+    '▸ first queued message',
+    '▸ second queued message',
+    '  ⎿  Sending to agent...',
+    rule,
+    '>',
+    rule,
+    '  Press up to edit queued messages                                 Gemini 4 Neon · xhigh',
+  ]);
+  const thoughtOnly = screenOf([
+    '▸ Thought for 10s, 167 tokens',
+    '⢿  Running command...',
+    '└ Tip: Use /tasks to see background tasks and their status.',
+    rule,
+    '>',
+    rule,
+    'esc to cancel                                                      Gemini 4 Neon · xhigh',
+  ]);
+  const asking = screenOf([
+    '▸ queued before dialog (alt+m to send immediately)',
+    rule,
+    'Run command?',
+    '> Allow once',
+    '  Deny',
+    '  ↑/↓ Navigate · tab Amend · ctrl+g edit/expand command',
+    '  Press up to edit queued messages',
+  ]);
+
+  assert.deepEqual(
+    {
+      twoQueued: agyQueued(twoQueued),
+      sendingNow: agyQueued(sendingNow),
+      thoughtOnly: agyQueued(thoughtOnly),
+      asking: agyQueued(asking),
+    },
+    {
+      twoQueued: ['first queued message', 'second queued message'],
+      sendingNow: [],
+      thoughtOnly: [],
+      asking: [],
+    },
+  );
 });

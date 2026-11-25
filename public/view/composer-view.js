@@ -89,6 +89,8 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
   const input = h('textarea', { className: 'composer-input', attrs: { rows: '2', 'aria-label': 'Prompt for Claude' } });
   input.value = readDraft(draftKey);
   const interrupt = h('button', { className: 'composer-stop', title: 'Stop — press Esc in the session terminal', attrs: { type: 'button', hidden: '', 'aria-label': 'Stop' } }, [icon('stop')]);
+  // while agy works, Enter queues — this sends the box's prompt immediately into its active turn (alt+m in its terminal)
+  const sendNowButton = h('button', { className: 'composer-send-now', title: keyboard === 'touch' ? 'Send immediately' : 'Send immediately (Ctrl+Enter)', attrs: { type: 'button', hidden: '', 'aria-label': 'Send immediately' } }, [icon('forward')]);
   const send = h('button', { className: 'composer-send', title: keyboard === 'touch' ? 'Send' : 'Send (Enter)', attrs: { type: 'submit', 'aria-label': 'Send' } }, [icon('send')]);
   // what comes to mind while the agent works is set aside rather than sent: in its queue it would break into the turn
   const setAsideButton = h('button', { className: 'icon-button composer-later', title: keyboard === 'touch' ? 'Set aside for later' : 'Set aside for later (Alt+Enter)', attrs: { type: 'button', 'aria-label': 'Set aside for later' } }, [icon('later')]);
@@ -178,7 +180,7 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
   // the text the whole width of the box, a row of its buttons under it: attach, paste and — on a phone — clear at its
   // start, setting aside, stop and send at its end, the phrases sent most between them
   const tools = h('div', { className: 'composer-tools' }, [attachments.button, paste, clear]);
-  const bar = h('div', { className: 'composer-bar' }, [tools, phraseBar.element, h('div', { className: 'composer-actions' }, [setAsideButton, interrupt, send])]);
+  const bar = h('div', { className: 'composer-bar' }, [tools, phraseBar.element, h('div', { className: 'composer-actions' }, [setAsideButton, interrupt, sendNowButton, send])]);
   const form = h('form', { className: 'composer-box' }, [commandMenu.element, fold, attachments.list, input, bar]);
   const aside = h('section', { className: 'side-answer', attrs: { hidden: '', 'aria-label': 'Side question', 'aria-live': 'polite' } });
   const closeAside = h('button', { className: 'icon-button side-answer-close', title: 'Close', attrs: { type: 'button', 'aria-label': 'Close' } }, [icon('cross')]);
@@ -203,12 +205,13 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
       return reply;
     },
   });
-  // what Codex queued to send next — Claude Code's queue shows in the feed
+  // what Codex or agy queued to send next — Claude Code's queue shows in the feed
+  const queuedAgent = agent === 'agy' ? 'agy' : 'Codex';
   const queuedList = h('ul', { className: 'composer-queued-items' });
-  const queued = h('section', { className: 'composer-queued', attrs: { hidden: '', 'aria-label': 'Queued' } }, [h('div', { className: 'composer-queued-note', text: 'Codex sends these next, once its turn is over.' }), queuedList]);
+  const queued = h('section', { className: 'composer-queued', attrs: { hidden: '', 'aria-label': 'Queued' } }, [h('div', { className: 'composer-queued-note', text: `${queuedAgent} sends these next, once its turn is over.` }), queuedList]);
   /**
-   * The message Codex queued last, sent now into its turn under way: the session's queue sent with nothing in the box —
-   * Codex takes back the one it queued last (shift+←), and only that one.
+   * Queued messages sent now into the turn under way: the session's queue sent with nothing in the box — Codex takes
+   * back the one it queued last (shift+←); agy flushes its queued messages immediately (alt+m).
    */
   const sendQueuedNow = () => {
     if (!enabled || sending || asking || !reachable) return;
@@ -230,7 +233,8 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
       ...items.map((item, at) => {
         const words = h('span', { className: 'composer-queued-text', text: item });
         if (at !== items.length - 1) return h('li', {}, [words]);
-        const now = h('button', { className: 'composer-queued-now', text: 'Send now', attrs: { type: 'button', title: 'Into Codex’s turn under way, not waiting for it to end' } });
+        const title = agent === 'agy' ? 'Send immediately into agy’s current turn' : 'Into Codex’s turn under way, not waiting for it to end';
+        const now = h('button', { className: 'composer-queued-now', text: 'Send now', attrs: { type: 'button', title } });
         now.addEventListener('click', sendQueuedNow);
         return h('li', {}, [words, now]);
       }),
@@ -337,6 +341,7 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
   };
   const refreshButtons = () => {
     send.disabled = !enabled || sending || asking || (input.value.trim() === '' && attachments.images().length === 0);
+    sendNowButton.disabled = send.disabled || !reachable;
     throughFile.disabled = send.disabled;
     // setting aside and images need the viewer: out of its reach the box only sends, to wait
     setAsideButton.disabled = !enabled || !reachable || input.value.trim() === '';
@@ -381,6 +386,7 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
     input.placeholder = view.placeholder;
     hint.textContent = view.hint;
     interrupt.hidden = !view.canInterrupt;
+    sendNowButton.hidden = !(agent === 'agy' && view.canInterrupt);
     busy = view.canInterrupt;
     resume.hidden = !view.canReopen;
     form.hidden = view.canReopen;
@@ -630,7 +636,7 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
         return;
       }
       if (outcome?.ok === true) {
-        onSent(text);
+        if (text !== '' || images.length > 0) onSent(text);
         void phraseBar.refresh();
         input.value = '';
         writeDraft(draftKey, '');
@@ -647,6 +653,7 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
     event.preventDefault();
     submitPrompt('queued', 'typed');
   });
+  sendNowButton.addEventListener('click', () => submitPrompt('now', 'typed'));
   throughFile.addEventListener('click', () => submitPrompt('queued', 'through a file'));
   /** The box's words set aside for later, the box free again; its images stay in it. */
   const setAside = () => {

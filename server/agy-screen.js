@@ -35,13 +35,21 @@ const serverRow = /^(?:(>)\s+|\s{2,})(\S)\s(\S+)(?:\s{2,}(\S.*?))?\s*$/;
 /** An action under the chosen server: a word or a few, the chosen one in brackets. */
 const action = /^(\[)?(\p{L}[\p{L} -]*?)\]?$/u;
 
+/** Footer under agy's prompt box while follow-up messages wait in its queue (or are being flushed). */
+const editQueuedFooter = /^\s*Press\s+\S+\s+to edit queued messages\b/;
+/** Line drawn directly below queued messages once alt+m starts sending them into the active turn. */
+const sendingQueuedLine = /^\s*⎿\s+Sending to agent\b/;
+/** A queued follow-up row directly above agy's prompt box. */
+const queuedRow = /^\s*▸\s+(.+?)\s*$/;
+/** Trailing shortcut hint on the latest queued row — e.g. "(alt+m to send immediately)". */
+const sendImmediatelyHint = /\s*\([^()]*to send immediately\)\s*$/i;
+
 /**
- * The text in agy's prompt box — empty while nothing is typed; none while a dialog takes its place.
- * @param {string} screen
- * @returns {string | undefined}
+ * Locate agy's prompt box rules (`top`, `bottom`) and lines between them; none while a dialog or panel takes keys.
+ * @param {readonly string[]} lines
+ * @returns {{ top: number, bottom: number, box: readonly string[] } | undefined}
  */
-export function agyInputBox(screen) {
-  const lines = screen.split('\n');
+function inputBoxBounds(lines) {
   // a panel under the box takes the keys: the box is on the screen, out of reach
   if (lines.some((line) => askingKeys.test(line) || writeInKeys.test(line) || panelKeys.test(line))) return undefined;
   // the box is under a rule and over the next one, only the typed text between them — its first line opened by ">", the
@@ -51,9 +59,44 @@ export function agyInputBox(screen) {
     if (!rule.test(lines[top] ?? '') || !(lines[top + 1] ?? '').startsWith('>')) continue;
     const bottom = lines.findIndex((line, at) => at > top && rule.test(line));
     const box = bottom === -1 ? [] : lines.slice(top + 1, bottom);
-    if (box.length > 0 && box.slice(1).every((line) => line.trim() === '' || line.startsWith(' '))) return box.map((line, at) => (at === 0 ? line.replace(/^>\s?/, '') : line.replace(/^ {2}/, '')).trimEnd()).join('\n');
+    if (box.length > 0 && box.slice(1).every((line) => line.trim() === '' || line.startsWith(' '))) return { top, bottom, box };
   }
   return undefined;
+}
+
+/**
+ * The text in agy's prompt box — empty while nothing is typed; none while a dialog takes its place.
+ * @param {string} screen
+ * @returns {string | undefined}
+ */
+export function agyInputBox(screen) {
+  const found = inputBoxBounds(screen.split('\n'));
+  return found === undefined ? undefined : found.box.map((line, at) => (at === 0 ? line.replace(/^>\s?/, '') : line.replace(/^ {2}/, '')).trimEnd()).join('\n');
+}
+
+/**
+ * Messages queued in agy while it works — listed directly above its prompt box (`▸ ...`) while the footer offers
+ * `Press up to edit queued messages`, and not yet marked `⎿  Sending to agent...`.
+ * @param {string} screen
+ * @returns {string[]}
+ */
+export function agyQueued(screen) {
+  const lines = screen.split('\n');
+  const found = inputBoxBounds(lines);
+  if (found === undefined) return [];
+  if (!lines.slice(found.bottom + 1).some((line) => editQueuedFooter.test(line))) return [];
+  let index = found.top - 1;
+  while (index >= 0 && (lines[index] ?? '').trim() === '') index -= 1;
+  if (index < 0 || sendingQueuedLine.test(lines[index] ?? '')) return [];
+  /** @type {string[]} */
+  const reversed = [];
+  for (; index >= 0; index--) {
+    const match = queuedRow.exec(lines[index] ?? '');
+    if (match === null) break;
+    const item = (match[1] ?? '').replace(sendImmediatelyHint, '').trim();
+    if (item !== '') reversed.push(item);
+  }
+  return reversed.reverse();
 }
 
 /**

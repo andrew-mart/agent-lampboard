@@ -5132,6 +5132,37 @@ table.diff tr.gap td {
   height: 17px;
 }
 
+/* Send immediately while agy works (alt+m in its terminal) */
+.composer-send-now {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev));
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.composer-send-now:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+}
+
+.composer-send-now:disabled {
+  border-color: var(--border);
+  background: var(--bg-elev);
+  color: var(--text-4);
+  cursor: default;
+}
+
+.composer-send-now .icon {
+  width: 15px;
+  height: 15px;
+}
+
 .composer-stop {
   display: grid;
   place-items: center;
@@ -13912,6 +13943,7 @@ a.file-link:hover {
 @media (pointer: coarse) {
   .icon-button,
   .composer-send,
+  .composer-send-now,
   .composer-stop,
   .composer-attach,
   .composer-paste,

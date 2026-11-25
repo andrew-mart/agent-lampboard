@@ -8,7 +8,7 @@
 //                                    agyPlace)
 //   herdr pane send-text / send-keys → the text and Enter, as if the user typed them
 import { setTimeout as delay } from 'node:timers/promises';
-import { agyDialog, agyInputBox } from './agy-screen.js';
+import { agyDialog, agyInputBox, agyQueued } from './agy-screen.js';
 import { driveAgyRewind } from './agy-rewind.js';
 import { driveBtw, readBtw, withPanelClosed } from './btw.js';
 import { inputBox, plainScreen, settleOn, settleWhileChanging, settleWithin, squash } from './claude-screen.js';
@@ -60,11 +60,12 @@ const enterLooks = 8;
 const typedLooks = { still: 60, most: 1200 };
 
 /**
- * @param {{ readRecords: () => Promise<readonly unknown[]>, herdr: RunHerdr, codexPlace: (sessionId: string) => Promise<import('./herdr-view.js').AgentPlace>, agyPlace?: (sessionId: string) => Promise<import('./herdr-view.js').AgentPlace> }} deps
+ * @param {{ readRecords: () => Promise<readonly unknown[]>, herdr: RunHerdr, codexPlace: (sessionId: string) => Promise<import('./herdr-view.js').AgentPlace>, agyPlace?: (sessionId: string) => Promise<import('./herdr-view.js').AgentPlace>, agyQueuedMode?: () => Promise<'queue' | 'send-immediately'> }} deps
  *   readRecords — contents of ~/.claude/sessions/*.json; herdr — runs the herdr CLI with arguments; codexPlace, agyPlace
- *   — where a Codex session runs, an agy conversation; none told — no agy here
+ *   — where a Codex session runs, an agy conversation; none told — no agy here; agyQueuedMode — agy's `queuedMessages`
+ *   setting ("queue" by default, or "send-immediately" where Enter sends immediately and alt+m queues)
  */
-export function createComposer({ readRecords, herdr, codexPlace, agyPlace = async () => ({ found: 'none' }) }) {
+export function createComposer({ readRecords, herdr, codexPlace, agyPlace = async () => ({ found: 'none' }), agyQueuedMode = async () => 'queue' }) {
   /**
    * A process's pane does not change while the process is alive: the search across all panes runs only the first time.
    * By its process's key (registry.js): the number goes to another process once it is gone.
@@ -328,13 +329,29 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
   }
 
   /**
-   * A prompt into agy's box, then Enter — while agy works, it queues the prompt itself. Not while agy asks something in
-   * the box's place: the keys would answer it.
+   * Which key submits agy's prompt box: Enter when idle; while agy works, Enter follows agy's `queuedMessages` setting
+   * ("queue" by default) and alt+m does the opposite — sending immediately in queue mode, or queueing in
+   * send-immediately mode.
+   * @param {Place} place
+   * @param {'queued' | 'now'} when
+   * @returns {Promise<'enter' | 'alt+m'>}
+   */
+  async function agySubmitKey(place, when) {
+    if (place.status !== 'busy') return 'enter';
+    const mode = await agyQueuedMode().catch(() => /** @type {const} */ ('queue'));
+    return (mode === 'send-immediately') === (when === 'now') ? 'enter' : 'alt+m';
+  }
+
+  /**
+   * A prompt into agy's box, then Enter (or alt+m for agy's opposite queued-messages mode) — while agy works, Enter
+   * queues by default and alt+m sends immediately into the active turn. Not while agy asks something in the box's
+   * place: the keys would answer it.
    * @param {Place} place
    * @param {string} input
+   * @param {'enter' | 'alt+m'} key
    * @returns {Promise<SendOutcome>}
    */
-  async function sendToAgy(place, input) {
+  async function sendToAgy(place, input, key = 'enter') {
     const terminal = terminalOf(place);
     // a screen agy is drawing anew shows no box for a moment
     const screen = await settleOn(terminal, (ms) => delay(ms), (now) => agyInputBox(now) !== undefined);
@@ -345,21 +362,42 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
       return { ok: false, error: 'asking' };
     }
     const typed = await typeIn(place, input, 'required');
-    return typed.ok ? enterUntilTaken(place, input) : typed;
+    return typed.ok ? enterUntilTaken(place, input, key) : typed;
   }
 
   /**
-   * Enter for the prompt in the box — Claude Code's, agy's — again while the box holds it: an Enter right after a long
-   * paste Claude Code may take for none. The box letting the prompt go — sent, or queued — is the prompt sent; still
-   * holding it after a few, it is not, and the page is told: the terminal has it.
+   * Messages waiting in agy's queue flushed immediately into its active turn: alt+m on an empty box sends all queued
+   * messages in order (`⎿  Sending to agent...`). Nothing queued — nothing to send.
    * @param {Place} place
-   * @param {string} input
    * @returns {Promise<SendOutcome>}
    */
-  async function enterUntilTaken(place, input) {
+  async function sendQueuedToAgyNow(place) {
+    const terminal = terminalOf(place);
+    const screen = await terminal.read();
+    if (screen === undefined || agyInputBox(screen) === undefined) return { ok: false, error: 'asking' };
+    if (agyQueued(screen).length === 0) return { ok: false, error: 'empty' };
+    for (let tries = 0; tries < enterTries; tries++) {
+      const sent = await press(place, [['send-keys', 'alt+m']]);
+      if (!sent.ok) return sent;
+      const flushed = await settleWithin(terminal, (ms) => delay(ms), (now) => agyQueued(now).length === 0, enterLooks);
+      if (flushed !== undefined) return sent;
+    }
+    return { ok: false, error: 'not-sent' };
+  }
+
+  /**
+   * Submit key for the prompt in the box — Claude Code's, agy's — again while the box holds it: an Enter right after a
+   * long paste Claude Code may take for none. The box letting the prompt go — sent, or queued — is the prompt sent;
+   * still holding it after a few, it is not, and the page is told: the terminal has it.
+   * @param {Place} place
+   * @param {string} input
+   * @param {'enter' | 'alt+m'} [key]
+   * @returns {Promise<SendOutcome>}
+   */
+  async function enterUntilTaken(place, input, key = 'enter') {
     const terminal = terminalOf(place);
     for (let tries = 0; tries < enterTries; tries++) {
-      const sent = await press(place, [['send-keys', 'enter']]);
+      const sent = await press(place, [['send-keys', key]]);
       if (!sent.ok) return sent;
       const letGo = await settleWithin(terminal, (ms) => delay(ms), (screen) => !holdsTyped(boxOf(place.agent, screen), input), enterLooks);
       if (letGo !== undefined) return sent;
@@ -460,8 +498,8 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
           // Codex's terminal showing a sub-agent's thread, or a side conversation, is not where a prompt goes: the page
           // waits for the main thread
           const status = place.agent !== 'codex' || screen === undefined ? place.status : showsSubagent(screen) ? 'subagent' : showsSideConversation(screen) ? 'side' : place.status;
-          // Claude Code's queue is in its transcript; Codex's is on its screen alone
-          const queued = place.agent === 'codex' && screen !== undefined ? codexQueued(screen) : [];
+          // Claude Code's queue is in its transcript; Codex's and agy's are on their screens alone
+          const queued = place.agent === 'codex' && screen !== undefined ? codexQueued(screen) : place.agent === 'agy' && screen !== undefined ? agyQueued(screen) : [];
           return { state: 'live', status, pane: place.pane, dialog: screen === undefined ? undefined : dialogOf(place.agent, screen), queued };
         }
         default:
@@ -482,7 +520,7 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
         const found = await target(sessionId);
         if (!found.ok) return found;
         const { place } = found;
-        const outcome = place.agent === 'codex' ? await sendToCodex(place, input, place.status === 'busy' ? 'tab' : 'enter') : place.agent === 'agy' ? await sendToAgy(place, input) : await sendToClaude(place, input);
+        const outcome = place.agent === 'codex' ? await sendToCodex(place, input, place.status === 'busy' ? 'tab' : 'enter') : place.agent === 'agy' ? await sendToAgy(place, input, await agySubmitKey(place, 'queued')) : await sendToClaude(place, input);
         if (outcome.ok) sentPrompts.set(sessionId, [...(sentPrompts.get(sessionId) ?? []), input].slice(-keptPrompts));
         return outcome;
       });
@@ -492,7 +530,8 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
      * may pass on as plain Enter; Ctrl+X Ctrl+S reaches it from any. Claude's work that can go to the background goes
      * there and Claude reads the messages in the same turn; otherwise the turn is stopped and they go next.
      * Codex's Enter puts a prompt into its turn under way; with nothing in the box, the message it queued last goes there
-     * instead. agy has no queue the viewer sends: the prompt goes as any.
+     * instead. agy's alt+m (or Enter when settings.json has queuedMessages="send-immediately") sends a prompt
+     * immediately into its active turn; with nothing in the box, alt+m flushes its queued messages immediately.
      * @param {string} sessionId
      * @param {string} text — none: the queue goes alone
      * @returns {Promise<SendOutcome>}
@@ -504,8 +543,8 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
         if (!found.ok) return found;
         const { place } = found;
         if (place.agent === 'codex' && input === '') return sendQueuedToCodexNow(place);
-        if (place.agent === 'agy' && input === '') return { ok: false, error: 'empty' };
-        const outcome = place.agent === 'codex' ? await sendToCodex(place, input, 'enter') : place.agent === 'agy' ? await sendToAgy(place, input) : await sendNowToClaude(place, input);
+        if (place.agent === 'agy' && input === '') return sendQueuedToAgyNow(place);
+        const outcome = place.agent === 'codex' ? await sendToCodex(place, input, 'enter') : place.agent === 'agy' ? await sendToAgy(place, input, await agySubmitKey(place, 'now')) : await sendNowToClaude(place, input);
         if (outcome.ok && input !== '') sentPrompts.set(sessionId, [...(sentPrompts.get(sessionId) ?? []), input].slice(-keptPrompts));
         return outcome;
       });

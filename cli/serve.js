@@ -31,7 +31,7 @@ import { createCodexThreads, lockHeld } from '../server/codex-live.js';
 import { createHiddenPanes } from '../server/hidden-panes.js';
 import { createHiddenWorkspaces } from '../server/hidden-workspaces.js';
 import { createAgyConversations } from '../server/agy-conversations.js';
-import { agyProcessesAmong, agyStartedSessions, createAgyCheck, createAgyProcesses, processAlive } from '../server/agy-live.js';
+import { agyProcessesAmong, agyStartedSessions, createAgyCheck, createAgyProcesses, processAlive, readAgyQueuedMode } from '../server/agy-live.js';
 import { createAgyModels, readAgyModelsOutput } from '../server/agy-models.js';
 import { createWorkspaceIcons } from '../server/workspace-icons.js';
 import { createSessionIndex } from '../server/sessions.js';
@@ -148,7 +148,7 @@ export async function serve({ port, about, palette, publicAddresses, herdr, clau
     },
   });
   await moveNotesOntoDesks({ index, herdrView, files: deskFiles, desks });
-  const composer = createComposer({ readRecords, herdr: run, codexPlace: herdrView.codexPlace, agyPlace: herdrView.agyPlace });
+  const composer = createComposer({ readRecords, herdr: run, codexPlace: herdrView.codexPlace, agyPlace: herdrView.agyPlace, agyQueuedMode: () => readAgyQueuedMode(agyHome) });
   // A terminal on the page: through herdr's socket a screen is read in a millisecond or two, so it is read every 40 ms
   // while typing; through the herdr program every call starts a process, a tenth of a second.
   const terminals = createTerminals({ io: paneIoOf(run), quickMs: via === 'socket' ? 40 : 200, slowMs: via === 'socket' ? 500 : 1000, quickForMs: 4000 });

@@ -10,6 +10,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isRecord } from '../public/model/narrow.js';
 import { parseSessionStatus } from '../public/model/session-status.js';
 import { folderKey } from './folders.js';
 
@@ -388,4 +389,21 @@ export function agyPanes(panes, runs, told) {
     else conversations.set(pane, run.conversation);
   }
   return { conversations, started };
+}
+
+/**
+ * How agy treats Enter while working, from `<home>/settings.json`'s `queuedMessages`: `'queue'` (default — Enter
+ * queues, Alt+M sends immediately) or `'send-immediately'` (Enter sends immediately, Alt+M queues).
+ * @param {string} home — agy's app data directory (~/.gemini/antigravity-cli)
+ * @returns {Promise<'queue' | 'send-immediately'>}
+ */
+export async function readAgyQueuedMode(home) {
+  const raw = await readFile(join(home, 'settings.json'), 'utf8').catch(() => undefined);
+  if (raw === undefined) return 'queue';
+  try {
+    const parsed = JSON.parse(raw.replace(/^\uFEFF/, ''));
+    return isRecord(parsed) && parsed.queuedMessages === 'send-immediately' ? 'send-immediately' : 'queue';
+  } catch {
+    return 'queue';
+  }
 }
