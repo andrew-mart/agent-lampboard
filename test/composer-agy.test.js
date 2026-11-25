@@ -180,18 +180,18 @@ test('answer_Should_PasteOwnWordsIntoAgysWriteInQuestion', async () => {
   );
 });
 
-// While agy asks something — a permission, a question — a prompt is not typed: its keys would answer it. agy has no
-// side question the viewer drives, and rewinds its conversation only with the files changed since: nothing is typed for
-// a side question, nor for the conversation rewound alone
+// While agy asks something — a permission, a question — neither a prompt nor /btw is typed: its keys would answer it.
+// agy rewinds its conversation only with the files changed since: nothing is typed for conversation-only rewind
 test('send_btw_And_rewind_Should_TypeNothingIntoAgy_WhileItAsks_OrForWhatAgyHasNot', async () => {
   const asking = fakeHerdr({ asking: true });
   const idle = fakeHerdr();
-  const composer = composerOf({ found: 'pane', pane: 'w2:p1', working: false }, idle);
+  const askingComposer = composerOf({ found: 'pane', pane: 'w2:p1', working: false }, asking);
+  const idleComposer = composerOf({ found: 'pane', pane: 'w2:p1', working: false }, idle);
 
   const outcomes = [
-    await composerOf({ found: 'pane', pane: 'w2:p1', working: false }, asking).send(conversation, 'Add the price filter'),
-    await composer.btw(conversation, 'Which page is busiest?'),
-    await composer.rewind(conversation, { stepsUp: 1, prompt: 'Add the price filter', sentAt: undefined, action: 'conversation' }),
+    await askingComposer.send(conversation, 'Add the price filter'),
+    await askingComposer.btw(conversation, 'Which page is busiest?'),
+    await idleComposer.rewind(conversation, { stepsUp: 1, prompt: 'Add the price filter', sentAt: undefined, action: 'conversation' }),
   ];
 
   assert.deepEqual(
@@ -199,7 +199,7 @@ test('send_btw_And_rewind_Should_TypeNothingIntoAgy_WhileItAsks_OrForWhatAgyHasN
     {
       outcomes: [
         { ok: false, error: 'asking' },
-        { ok: false, error: 'not-asked' },
+        { ok: false, error: 'screen-unreadable' },
         { ok: false, error: 'option-not-found' },
       ],
       typed: [],
@@ -287,6 +287,64 @@ test('send_And_sendNow_Should_SwapEnterAndAltM_WhenAgyIsInSendImmediatelyMode', 
     {
       busy: ['paste-text w2:p1 Queue this one', 'send-keys w2:p1 alt+m', 'paste-text w2:p1 Send this right away', 'send-keys w2:p1 enter'],
       idle: ['paste-text w2:p1 Idle message', 'send-keys w2:p1 enter'],
+    },
+  );
+});
+
+// agy answers /btw in a heavy-bar (┃) overlay above its prompt box: composer.btw pastes /btw <question>, reads the
+// answer and dismisses with Enter; composer.resumeBtw picks up an already-open overlay without re-typing
+test('btw_And_resumeBtw_Should_DriveAgySideQuestion_AndResumeOpenOverlay', async () => {
+  /** @param {string | undefined} preOpen */
+  const btwHerdr = (preOpen) => {
+    let box = '';
+    /** @type {string | undefined} */
+    let overlay = preOpen;
+    let looks = 0;
+    /** @type {string[]} */
+    const changes = [];
+    /** @param {readonly string[]} args @returns {Promise<import('../server/composer.js').HerdrReply>} */
+    const run = async (args) => {
+      const [, command, pane, argument] = args;
+      const keys = args.slice(3);
+      if (command === 'list') return { ok: true, json: { result: { panes: [{ agent: 'agy', pane_id: 'w2:p1' }] } }, text: '' };
+      if (command === 'read') {
+        const panel =
+          overlay === undefined
+            ? []
+            : looks++ === 0
+              ? [` ┃ /btw ${overlay}`, ' ┃', ' ┃ ⣽  Working... (Enter/Esc to cancel)']
+              : [` ┃ /btw ${overlay}`, ' ┃', ' ┃   Yes, 955k is revenue.', ' ┃ Tab to expand · Enter/Esc to dismiss'];
+        return { ok: true, json: undefined, text: [...banner, ...panel, rule, `> ${box}`.trimEnd(), rule, `? for shortcuts${' '.repeat(20)}Gemini 4 Argon · high`].join('\n') };
+      }
+      if ((command === 'send-text' || command === 'paste-text') && argument !== undefined) box += argument;
+      if (command === 'send-keys' && keys.includes('enter')) {
+        if (overlay !== undefined && box === '') overlay = undefined;
+        else if (box.startsWith('/btw ')) {
+          overlay = box.slice('/btw '.length);
+          looks = 0;
+          box = '';
+        }
+      }
+      changes.push(`${command} ${pane} ${keys.join(' ')}`);
+      return { ok: true, json: { result: { type: 'ok' } }, text: '' };
+    };
+    return { run, changes };
+  };
+
+  const ask = btwHerdr(undefined);
+  const resume = btwHerdr('Is 955k revenue?');
+  const place = /** @type {const} */ ({ found: 'pane', pane: 'w2:p1', working: true });
+
+  const asked = await composerOf(place, ask).btw(conversation, 'Is 955k revenue?');
+  const resumed = await composerOf(place, resume).resumeBtw(conversation, 'Is 955k revenue?');
+
+  assert.deepEqual(
+    { asked, askChanges: ask.changes, resumed, resumeChanges: resume.changes },
+    {
+      asked: { ok: true, answer: 'Yes, 955k is revenue.' },
+      askChanges: ['paste-text w2:p1 /btw Is 955k revenue?', 'send-keys w2:p1 enter', 'send-keys w2:p1 enter'],
+      resumed: { ok: true, answer: 'Yes, 955k is revenue.' },
+      resumeChanges: ['send-keys w2:p1 enter'],
     },
   );
 });

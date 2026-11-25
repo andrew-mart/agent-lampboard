@@ -414,13 +414,11 @@ export function withPoint(draft, point) {
 
 /**
  * The side question in the box: what follows "/btw" at its start, as the terminal takes it; empty for a bare "/btw".
- * agy has no side question the viewer drives: its box holds a prompt.
  * @param {string} text — the box
- * @param {Agent} agent — whose session
+ * @param {Agent} [_agent] - whose session
  * @returns {string | undefined} — none when the box holds an ordinary prompt
  */
-export function sideQuestionOf(text, agent) {
-  if (agent === 'agy') return undefined;
+export function sideQuestionOf(text, _agent) {
   const match = /^\s*\/btw(?:\s+([\s\S]*))?$/.exec(text);
   return match === null ? undefined : (match[1] ?? '').trim();
 }

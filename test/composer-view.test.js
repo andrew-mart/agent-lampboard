@@ -161,8 +161,7 @@ test('promptForBox_Should_LeaveImageListAsTextWhenViewerDidNotSaveEveryImage', (
 });
 
 // "/btw" in the box asks aside, as in the terminal; bare "/btw" is a side question with nothing asked yet — sent to the
-// terminal it would reopen the last answer there and leave the panel open. Codex asks aside as well; agy has no side
-// question the viewer drives: "/btw" goes to it as any prompt
+// terminal it would reopen the last answer there and leave the panel open. Claude, Codex and agy all ask aside
 test('sideQuestionOf_Should_TakeQuestionAfterBtw_OnlyAtStartOfBox_ForAgentsThatAskAside', () => {
   assert.deepEqual(
     {
@@ -170,7 +169,7 @@ test('sideQuestionOf_Should_TakeQuestionAfterBtw_OnlyAtStartOfBox_ForAgentsThatA
       codex: sideQuestionOf('/btw where is the retry limit?', 'codex'),
       agy: sideQuestionOf('/btw where is the retry limit?', 'agy'),
     },
-    { claude: ['where is the retry limit?', 'which file\nand which line?', '', undefined, undefined], codex: 'where is the retry limit?', agy: undefined },
+    { claude: ['where is the retry limit?', 'which file\nand which line?', '', undefined, undefined], codex: 'where is the retry limit?', agy: 'where is the retry limit?' },
   );
 });
 

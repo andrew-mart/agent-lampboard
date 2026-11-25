@@ -9,6 +9,7 @@
 //   herdr pane send-text / send-keys → the text and Enter, as if the user typed them
 import { setTimeout as delay } from 'node:timers/promises';
 import { agyDialog, agyInputBox, agyQueued } from './agy-screen.js';
+import { driveAgyBtw, readAgyBtw, withAgyBtwClosed } from './agy-btw.js';
 import { driveAgyRewind } from './agy-rewind.js';
 import { driveBtw, readBtw, withPanelClosed } from './btw.js';
 import { inputBox, plainScreen, settleOn, settleWhileChanging, settleWithin, squash } from './claude-screen.js';
@@ -353,6 +354,7 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
    */
   async function sendToAgy(place, input, key = 'enter') {
     const terminal = terminalOf(place);
+    await withAgyBtwClosed(terminal, (ms) => delay(ms));
     // a screen agy is drawing anew shows no box for a moment
     const screen = await settleOn(terminal, (ms) => delay(ms), (now) => agyInputBox(now) !== undefined);
     if (screen === undefined) {
@@ -550,7 +552,7 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
       });
     },
     /**
-     * A side question, as /btw in the session's terminal: Claude answers from the conversation without adding to it.
+     * A side question, as /btw in the session's terminal: the agent answers from the conversation without adding to it.
      * @param {string} sessionId
      * @param {string} question
      * @returns {Promise<BtwReply>}
@@ -560,9 +562,12 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
       const reply = inTurn(sessionId, /** @returns {Promise<BtwReply>} */ async () => {
         const where = await locate(sessionId);
         if (where.kind !== 'live') return { ok: false, error: where.kind };
-        // agy has no side question the viewer drives
-        if (where.place.agent === 'agy') return { ok: false, error: 'not-asked' };
         const terminal = terminalOf(where.place);
+        if (where.place.agent === 'agy') {
+          /** @type {import('./claude-screen.js').Terminal} */
+          const agyTerminal = { ...terminal, text: async (text) => (await press(where.place, [[textCommand('agy'), text]])).ok };
+          return driveAgyBtw(agyTerminal, { question, wait: (ms) => delay(ms) });
+        }
         // Codex answers it in a side conversation of its own (codex-btw.js)
         const recent = () => recentOf(where.place.pane);
         return where.place.agent === 'codex' ? driveCodexBtw(terminal, { question, wait: (ms) => delay(ms), recent }) : driveBtw(terminal, { question, wait: (ms) => delay(ms) });
@@ -577,7 +582,7 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
     /**
      * The answer of a side question asked before, the page's request for it lost — the viewer restarted, the network
      * dropped: the question still answered here is joined; else its answer is read off the panel still open for it in
-     * Claude Code's terminal, nothing asked again. Codex's side conversation is not read again.
+     * Claude Code's or agy's terminal, nothing asked again. Codex's side conversation is not read again.
      * @param {string} sessionId
      * @param {string} question
      * @returns {Promise<BtwReply>}
@@ -588,6 +593,7 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
       return inTurn(sessionId, async () => {
         const where = await locate(sessionId);
         if (where.kind !== 'live') return { ok: false, error: where.kind };
+        if (where.place.agent === 'agy') return readAgyBtw(terminalOf(where.place), { question, wait: (ms) => delay(ms) });
         if (where.place.agent !== 'claude') return { ok: false, error: 'panel-closed' };
         return readBtw(terminalOf(where.place), { question, wait: (ms) => delay(ms) });
       });

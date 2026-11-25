@@ -191,6 +191,36 @@ test('composer_Should_AskBtwAsSideQuestion_InCodexSession', async () => {
   assert.deepEqual(posted, [`/api/btw {"session":"${sessionId}","question":"where is the config?"}`]);
 });
 
+// agy has its side questions as well: in its session "/btw …" is asked via /api/btw and shown in the side-answer card
+test('composer_Should_AskBtwAsSideQuestion_InAgySession', async () => {
+  /** @type {string[]} */
+  const posted = [];
+  Object.assign(globalThis, {
+    matchMedia: () => ({ matches: false }),
+    fetch: async (/** @type {string} */ path, /** @type {RequestInit | undefined} */ init) => {
+      if (init?.method === 'POST') posted.push(`${path} ${String(init.body)}`);
+      const reply = path === '/api/send' ? { ok: true, pane: 'w2:p1' } : path === '/api/btw' ? { ok: true, answer: 'Да, это выручка.' } : { state: 'live', status: 'idle', pane: 'w2:p1' };
+      return new Response(JSON.stringify(reply), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  const composer = createComposer(sessionId, { agent: 'agy', focusBox: 'no', placeOf: () => undefined, asides: createAsideStore(), onSent: () => undefined, onDialog: () => undefined });
+  window.document.body.append(composer.element);
+  await settle();
+  const box = composer.element.querySelector('.composer-input');
+  const form = composer.element.querySelector('.composer-box');
+  assert.ok(box instanceof window.HTMLTextAreaElement && form instanceof window.HTMLElement);
+  box.value = '/btw 955 тыс. ₽ это выручка?';
+  box.dispatchEvent(new window.Event('input', { bubbles: true }));
+  form.dispatchEvent(new window.Event('submit', { cancelable: true }));
+  await settle();
+  const aside = composer.element.querySelector('.side-answer');
+  const shown = aside instanceof window.HTMLElement && !aside.hidden ? aside.querySelector('.side-answer-text')?.textContent : undefined;
+  composer.dispose();
+  composer.element.remove();
+
+  assert.deepEqual({ posted, shown }, { posted: [`/api/btw {"session":"${sessionId}","question":"955 тыс. ₽ это выручка?"}`], shown: 'Да, это выручка.' });
+});
+
 // What Codex queued to send next shows above the box, sent once its turn is over; nothing queued, nothing shown
 test('composer_Should_ShowWhatCodexQueued_AboveTheBox', async () => {
   /** @param {readonly string[]} queued */

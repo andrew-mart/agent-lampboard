@@ -49,7 +49,7 @@ const sendImmediatelyHint = /\s*\([^()]*to send immediately\)\s*$/i;
  * @param {readonly string[]} lines
  * @returns {{ top: number, bottom: number, box: readonly string[] } | undefined}
  */
-function inputBoxBounds(lines) {
+export function agyBoxBounds(lines) {
   // a panel under the box takes the keys: the box is on the screen, out of reach
   if (lines.some((line) => askingKeys.test(line) || writeInKeys.test(line) || panelKeys.test(line))) return undefined;
   // the box is under a rule and over the next one, only the typed text between them — its first line opened by ">", the
@@ -70,7 +70,7 @@ function inputBoxBounds(lines) {
  * @returns {string | undefined}
  */
 export function agyInputBox(screen) {
-  const found = inputBoxBounds(screen.split('\n'));
+  const found = agyBoxBounds(screen.split('\n'));
   return found === undefined ? undefined : found.box.map((line, at) => (at === 0 ? line.replace(/^>\s?/, '') : line.replace(/^ {2}/, '')).trimEnd()).join('\n');
 }
 
@@ -82,7 +82,7 @@ export function agyInputBox(screen) {
  */
 export function agyQueued(screen) {
   const lines = screen.split('\n');
-  const found = inputBoxBounds(lines);
+  const found = agyBoxBounds(lines);
   if (found === undefined) return [];
   if (!lines.slice(found.bottom + 1).some((line) => editQueuedFooter.test(line))) return [];
   let index = found.top - 1;
