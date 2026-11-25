@@ -566,7 +566,7 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
         if (where.place.agent === 'agy') {
           /** @type {import('./claude-screen.js').Terminal} */
           const agyTerminal = { ...terminal, text: async (text) => (await press(where.place, [[textCommand('agy'), text]])).ok };
-          return driveAgyBtw(agyTerminal, { question, wait: (ms) => delay(ms) });
+          return driveAgyBtw(agyTerminal, { question, wait: (ms) => delay(ms), styled: () => styledScreenOf(where.place.pane) });
         }
         // Codex answers it in a side conversation of its own (codex-btw.js)
         const recent = () => recentOf(where.place.pane);
@@ -593,7 +593,7 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
       return inTurn(sessionId, async () => {
         const where = await locate(sessionId);
         if (where.kind !== 'live') return { ok: false, error: where.kind };
-        if (where.place.agent === 'agy') return readAgyBtw(terminalOf(where.place), { question, wait: (ms) => delay(ms) });
+        if (where.place.agent === 'agy') return readAgyBtw(terminalOf(where.place), { question, wait: (ms) => delay(ms), styled: () => styledScreenOf(where.place.pane) });
         if (where.place.agent !== 'claude') return { ok: false, error: 'panel-closed' };
         return readBtw(terminalOf(where.place), { question, wait: (ms) => delay(ms) });
       });

@@ -308,12 +308,16 @@ test('btw_And_resumeBtw_Should_DriveAgySideQuestion_AndResumeOpenOverlay', async
       const keys = args.slice(3);
       if (command === 'list') return { ok: true, json: { result: { panes: [{ agent: 'agy', pane_id: 'w2:p1' }] } }, text: '' };
       if (command === 'read') {
+        const isAnsi = args.includes('ansi');
+        const ready = isAnsi ? looks > 0 : looks++ > 0;
         const panel =
           overlay === undefined
             ? []
-            : looks++ === 0
+            : !ready
               ? [` ┃ /btw ${overlay}`, ' ┃', ' ┃ ⣽  Working... (Enter/Esc to cancel)']
-              : [` ┃ /btw ${overlay}`, ' ┃', ' ┃   Yes, 955k is revenue.', ' ┃ Tab to expand · Enter/Esc to dismiss'];
+              : isAnsi
+                ? [` \x1b[38;5;3m┃\x1b[0m \x1b[1m/btw ${overlay}\x1b[0m`, ' \x1b[38;5;3m┃\x1b[0m', ' \x1b[38;5;3m┃\x1b[0m   Yes, \x1b[1m955k\x1b[0m is \x1b[38;5;12mrevenue\x1b[0m.', ' \x1b[38;5;3m┃\x1b[0m Tab to expand · Enter/Esc to dismiss']
+                : [` ┃ /btw ${overlay}`, ' ┃', ' ┃   Yes, 955k is revenue.', ' ┃ Tab to expand · Enter/Esc to dismiss'];
         return { ok: true, json: undefined, text: [...banner, ...panel, rule, `> ${box}`.trimEnd(), rule, `? for shortcuts${' '.repeat(20)}Gemini 4 Argon · high`].join('\n') };
       }
       if ((command === 'send-text' || command === 'paste-text') && argument !== undefined) box += argument;
@@ -341,9 +345,9 @@ test('btw_And_resumeBtw_Should_DriveAgySideQuestion_AndResumeOpenOverlay', async
   assert.deepEqual(
     { asked, askChanges: ask.changes, resumed, resumeChanges: resume.changes },
     {
-      asked: { ok: true, answer: 'Yes, 955k is revenue.' },
+      asked: { ok: true, answer: 'Yes, **955k** is `revenue`.' },
       askChanges: ['paste-text w2:p1 /btw Is 955k revenue?', 'send-keys w2:p1 enter', 'send-keys w2:p1 enter'],
-      resumed: { ok: true, answer: 'Yes, 955k is revenue.' },
+      resumed: { ok: true, answer: 'Yes, **955k** is `revenue`.' },
       resumeChanges: ['send-keys w2:p1 enter'],
     },
   );

@@ -8,7 +8,7 @@ import { askerNames, btwMessage, composerState, outcomeMessage, parseBtwReply, p
 import { parseDialogReply } from '../model/dialog.js';
 import { parseNewTab } from '../model/herdr.js';
 import { createPhraseCount } from '../model/phrases.js';
-import { answerBlocks } from '../model/side-answer.js';
+import { answerBlocks, sideAnswerMarkdown } from '../model/side-answer.js';
 import { completeCommand, parseCommands } from '../model/command-suggest.js';
 import { createAttachmentPicker } from './attachment-picker.js';
 import { createPhraseBar } from './phrase-bar.js';
@@ -18,6 +18,7 @@ import { h } from './dom.js';
 import { icon } from './icons.js';
 import { createLaterStore } from './later-store.js';
 import { createLaterList } from './later-view.js';
+import { renderMarkdown } from './markdown.js';
 import { browserLocks, browserStorage, createOutbox } from './outbox.js';
 
 /** How often to check whether the session is running and busy — and at once whenever told something changed (pokeLive). */
@@ -873,8 +874,11 @@ function isOtherField(element, box) {
  */
 function answerBlock(block) {
   switch (block.kind) {
-    case 'text':
-      return h('p', { className: 'side-answer-paragraph', text: block.text });
+    case 'text': {
+      const rendered = renderMarkdown(sideAnswerMarkdown(block.text));
+      while (rendered.lastChild instanceof window.Text && rendered.lastChild.data.trim() === '') rendered.lastChild.remove();
+      return h('div', { className: 'md answer side-answer-md' }, [rendered]);
+    }
     case 'preformatted':
       return h('pre', { className: 'side-answer-box', text: block.text });
     case 'table': {

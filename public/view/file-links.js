@@ -26,11 +26,11 @@ export function linkFileRefs(root) {
     const whole = text === null || code.closest('pre, a') !== null ? undefined : wholeFileRef(text);
     if (whole !== undefined) code.replaceChildren(fileLink(whole, whole.text));
   }
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const walker = document.createTreeWalker(root, window.NodeFilter.SHOW_TEXT);
   /** @type {Text[]} */
   const texts = [];
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    if (node instanceof Text && node.parentElement?.closest('pre, a') === null) texts.push(node);
+    if (node instanceof window.Text && node.parentElement?.closest('pre, a') === null) texts.push(node);
   }
   const offered = texts.flatMap((node) => linkText(node));
   if (offered.length > 0) void linkWholeWhereFound(offered);

@@ -529,3 +529,61 @@ test('composer_Should_SayNoSideAnswersAreKept_ToBtwWithNoQuestion', async () => 
 
   assert.equal(said, 'No side answers to show yet: write the question after /btw.');
 });
+
+// A side answer with Markdown (headings, bold, italic, inline code, numbered/nested lists, code blocks, file refs) is
+// rendered as formatted HTML in the By the way card, not as raw plain text
+test('composer_Should_RenderSideAnswerMarkdown_WithHeadingsStylesListsAndCode', async () => {
+  const md = [
+    '### 1. Flow',
+    '',
+    'Runs **synchronously** with *no* queue via `handlers.py`:',
+    '',
+    '1. First step',
+    '2. Second step:',
+    '  • nested child',
+    '3. Third step',
+    '',
+    '```js',
+    'const x = 1;',
+    '```',
+  ].join('\n');
+  Object.assign(globalThis, {
+    matchMedia: () => ({ matches: false }),
+    fetch: async (/** @type {string} */ path) => {
+      const reply = path === '/api/btw' ? { ok: true, answer: md } : { state: 'live', status: 'idle', pane: 'w2:p1' };
+      return new Response(JSON.stringify(reply), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  const composer = createComposer(sessionId, { agent: 'agy', focusBox: 'no', placeOf: () => undefined, asides: createAsideStore(), onSent: () => undefined, onDialog: () => undefined });
+  window.document.body.replaceChildren(composer.element);
+  await settle();
+  const box = composer.element.querySelector('.composer-input');
+  const form = composer.element.querySelector('.composer-box');
+  assert.ok(box instanceof window.HTMLTextAreaElement && form instanceof window.HTMLElement);
+  box.value = '/btw how does it work?';
+  box.dispatchEvent(new window.Event('input', { bubbles: true }));
+  form.dispatchEvent(new window.Event('submit', { cancelable: true }));
+  await settle();
+  const text = composer.element.querySelector('.side-answer-text');
+  assert.ok(text instanceof window.HTMLElement);
+  const rendered = {
+    heading: text.querySelector('h3')?.textContent,
+    strong: text.querySelector('strong')?.textContent,
+    em: text.querySelector('em')?.textContent,
+    inlineCode: text.querySelector('p code')?.textContent,
+    olItems: text.querySelectorAll('ol > li').length,
+    nestedUlItem: text.querySelector('ol > li > ul > li')?.textContent,
+    codeBlock: text.querySelector('.code-frame pre code')?.textContent?.trim(),
+  };
+  composer.dispose();
+
+  assert.deepEqual(rendered, {
+    heading: '1. Flow',
+    strong: 'synchronously',
+    em: 'no',
+    inlineCode: 'handlers.py',
+    olItems: 3,
+    nestedUlItem: 'nested child',
+    codeBlock: 'const x = 1;',
+  });
+});

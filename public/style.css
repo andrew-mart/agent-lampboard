@@ -4820,6 +4820,26 @@ table.diff tr.gap td {
   overflow-wrap: anywhere;
 }
 
+.md.answer.side-answer-md {
+  font-size: 14px;
+}
+
+.md.answer.side-answer-md :is(h1, h2, h3, h4) {
+  margin: 0.75em 0 0.25em;
+}
+
+.md.answer.side-answer-md h1 {
+  font-size: 1.25em;
+}
+
+.md.answer.side-answer-md h2 {
+  font-size: 1.15em;
+}
+
+.md.answer.side-answer-md h3 {
+  font-size: 1.05em;
+}
+
 .side-answer-table table {
   font-size: 13px;
 }

@@ -71,3 +71,53 @@ function withoutBlankEnds(lines) {
   const last = lines.findLastIndex((line) => line.trim() !== '');
   return first < 0 ? [] : lines.slice(first, last + 1);
 }
+
+const fenceToggle = /^\s*```/;
+const loneNumberDot = /^(\s*\d+)\.\s*$/;
+const orderedItem = /^(\s*)(\d+\.\s)/;
+const bulletItem = /^(\s*)([•-])\s+(.*)$/;
+
+/**
+ * Prepare a side-answer text block for Markdown rendering: convert terminal bullets (`• `) to Markdown list markers
+ * (`- `) outside fenced code blocks, bump 2-space indented bullets immediately under a numbered item to match the
+ * numbered item's content column so CommonMark nests the sublist inside the `<ol><li>`, and escape a lone number with
+ * a period (e.g. `8080.`) so CommonMark does not swallow it as an empty ordered list.
+ * @param {string} source
+ * @returns {string}
+ */
+export function sideAnswerMarkdown(source) {
+  let inFence = false;
+  /** Content column of the active ordered list item (e.g. 3 for `1. `), or undefined outside one. */
+  /** @type {number | undefined} */
+  let orderedIndent;
+  return source
+    .split('\n')
+    .map((line) => {
+      if (fenceToggle.test(line)) {
+        inFence = !inFence;
+        orderedIndent = undefined;
+        return line;
+      }
+      if (inFence) return line;
+      if (loneNumberDot.test(line)) {
+        orderedIndent = undefined;
+        return line.replace(loneNumberDot, '$1\\.');
+      }
+      const ordered = orderedItem.exec(line);
+      if (ordered !== null) {
+        orderedIndent = (ordered[1]?.length ?? 0) + (ordered[2]?.length ?? 0);
+        return line;
+      }
+      const bullet = bulletItem.exec(line);
+      if (bullet !== null) {
+        const spaces = bullet[1] ?? '';
+        const text = bullet[3] ?? '';
+        const indent = orderedIndent !== undefined && spaces.length > 0 && spaces.length < orderedIndent ? ' '.repeat(orderedIndent) : spaces;
+        if (spaces.length === 0) orderedIndent = undefined;
+        return `${indent}- ${text}`;
+      }
+      if (line.trim() === '') orderedIndent = undefined;
+      return line;
+    })
+    .join('\n');
+}

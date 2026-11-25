@@ -292,3 +292,99 @@ test('withAgyBtwClosed_Should_DismissOnlyWhenOverlayOpenAndBoxEmpty', async () =
     },
   );
 });
+
+// When agy's visible ANSI screen is available, driveAgyBtw recovers Markdown formatting from agy's SGR styles:
+// headings (bold ###), bold (including across soft line wraps), italic, inline code (color 12), bullets, and
+// syntax-highlighted code blocks; if the visible screen is scrolled away from the overlay, falls back to plain text
+test('driveAgyBtw_Should_RecoverMarkdownFormatting_FromVisibleAnsiOverlay_AndFallbackWhenScrolled', async () => {
+  const esc = '\x1b';
+  const bar = ` ${esc}[0m${esc}[38;5;3m┃${esc}[0m`;
+  const rule = '─'.repeat(55); // wrap width = 55 - 7 = 48
+  const q = 'explain formatting';
+  const ansiOverlay = [
+    `${bar} ${esc}[0m${esc}[1m${esc}[38;5;3m/btw ${esc}[0m${q}`,
+    `${bar}`,
+    `${bar}   ${esc}[0m${esc}[1m### Sample Heading${esc}[0m`,
+    `${bar}`,
+    `${bar}   Here is a ${esc}[0m${esc}[1mbold phrase that wraps across the line${esc}[0m`,
+    `${bar}   ${esc}[0m${esc}[1mboundary${esc}[0m, an ${esc}[0m${esc}[3mitalic${esc}[0m word, and ${esc}[0m${esc}[38;5;12mhandlers.py${esc}[0m.`,
+    `${bar}`,
+    `${bar}   • First bullet`,
+    `${bar}   • Second bullet`,
+    `${bar}`,
+    `${bar}     ${esc}[0m${esc}[1m${esc}[38;5;70mconst${esc}[0m${esc}[38;5;252m x = ${esc}[0m${esc}[38;5;67m1${esc}[0m${esc}[38;5;252m;${esc}[0m`,
+    `${bar}     ${esc}[0m${esc}[38;5;252mconsole.log(x);${esc}[0m`,
+    `${bar} ${esc}[0m${esc}[38;5;8mTab to expand · Enter/Esc to dismiss${esc}[0m`,
+  ];
+  const plainOverlay = ansiOverlay.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ''));
+
+  /** @param {boolean} scrolledAway */
+  const runCase = async (scrolledAway) => {
+    let box = '';
+    let open = false;
+    let looks = 0;
+    const render = (/** @type {readonly string[]} */ ov) => [...banner, ...(open ? (looks < 2 ? [` ┃ /btw ${q}`, ' ┃', ' ┃ ⣽  Working... (Enter/Esc to cancel)'] : ov) : []), rule, `> ${box}`.trimEnd(), rule, '? for shortcuts          Gemini 4 Argon · high'].join('\n');
+    /** @type {import('../server/claude-screen.js').Terminal} */
+    const terminal = {
+      read: async () => {
+        if (open) looks += 1;
+        return render(plainOverlay);
+      },
+      text: async (text) => {
+        box += text;
+        return true;
+      },
+      keys: async (...keys) => {
+        for (const key of keys) {
+          if (key === 'enter' && open && box === '') open = false;
+          else if (key === 'enter' && box.startsWith('/btw ')) {
+            open = true;
+            box = '';
+          }
+        }
+        return true;
+      },
+    };
+    const styled = async () => (scrolledAway ? banner.join('\n') : render(ansiOverlay));
+    return driveAgyBtw(terminal, { question: q, wait: noWait, styled });
+  };
+
+  const formatted = await runCase(false);
+  const fallback = await runCase(true);
+
+  assert.deepEqual(
+    { formatted, fallback },
+    {
+      formatted: {
+        ok: true,
+        answer: [
+          '### Sample Heading',
+          '',
+          'Here is a **bold phrase that wraps across the line boundary**, an *italic* word, and `handlers.py`.',
+          '',
+          '- First bullet',
+          '- Second bullet',
+          '',
+          '```',
+          'const x = 1;',
+          'console.log(x);',
+          '```',
+        ].join('\n'),
+      },
+      fallback: {
+        ok: true,
+        answer: [
+          '### Sample Heading',
+          '',
+          'Here is a bold phrase that wraps across the line boundary, an italic word, and handlers.py.',
+          '',
+          '• First bullet',
+          '• Second bullet',
+          '',
+          '  const x = 1;',
+          '  console.log(x);',
+        ].join('\n'),
+      },
+    },
+  );
+});
