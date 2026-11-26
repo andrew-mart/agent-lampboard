@@ -60,6 +60,7 @@ import { noteOpened, parseRecent, switcherEntries } from './model/recent-tabs.js
 import { createNotePanel } from './view/note-panel.js';
 import { createNoteEditor } from './view/note-editor.js';
 import { fileRefFromHref, findFileRefs } from './model/file-ref.js';
+import { fileLinkTarget } from './view/file-links.js';
 import { createNotesHistoryPanel } from './view/notes-history-view.js';
 import { h } from './view/dom.js';
 import { createFilePanel } from './view/file-panel.js';
@@ -284,7 +285,7 @@ const mountNotesEditor = async (host, options) =>
     : (await import('./view/note-editor-cm.js')).mountNoteEditor(host, options);
 /** The documents the side panel showed, put away under the feed as cards to open again, in any session (doc-dock.js). */
 const dock = createDocDock({ docs: () => filePanel.docs(), open: (key) => filePanel.showDoc(key), close: (key) => filePanel.forgetDoc(key), iconOf: (name) => iconOf(name, 'file', false) });
-const filePanel = createFilePanel({ onDocs: () => docsChanged(), markdownEditor: async (host, options) => (await import('./view/markdown-file-editor.js')).mountMarkdownFileEditor(host, options, { mount: mountNotesEditor, onOpen: openFromNote }), notesEngine, keptDocs: { read: () => keptJson(readStorage(keptDocsKey)), write: (docs) => writeStorage(keptDocsKey, JSON.stringify(docs)) }, openKeptNote: (noteId, sessionId) => page.openNote(noteId, sessionId), panel: byId('file-panel', HTMLElement), layout, editor: createEditorOpener(machine, places), fileManager: { places, show: (path) => void openFileManager({ path }) }, vscode: machine.then((known) => (known?.vscode === true ? (path, line) => vscodeOpener.open({ path, line }) : undefined)), project: (path) => projectSource(projectOfFile(path, page.folder())), folder: projectSource, iconOf, pins: { scopesOf: (path) => { const pins = page.pins(); return pins === undefined ? undefined : scopesOf(pins.now(), path); }, pin: async (path, scope) => { const pins = page.pins(); return pins === undefined ? 'failed' : pins.pin(scope, path); }, unpin: (path) => page.pins()?.unpin(path) } });
+const filePanel = createFilePanel({ onDocs: () => docsChanged(), markdownEditor: async (host, options) => (await import('./view/markdown-file-editor.js')).mountMarkdownFileEditor(host, options, { mount: mountNotesEditor, onOpen: (target) => openFromNote(target, 'panel') }), notesEngine, keptDocs: { read: () => keptJson(readStorage(keptDocsKey)), write: (docs) => writeStorage(keptDocsKey, JSON.stringify(docs)) }, openKeptNote: (noteId, sessionId) => page.openNote(noteId, sessionId), panel: byId('file-panel', HTMLElement), layout, editor: createEditorOpener(machine, places), fileManager: { places, show: (path) => void openFileManager({ path }) }, vscode: machine.then((known) => (known?.vscode === true ? (path, line) => vscodeOpener.open({ path, line }) : undefined)), project: (path) => projectSource(projectOfFile(path, page.folder())), folder: projectSource, iconOf, pins: { scopesOf: (path) => { const pins = page.pins(); return pins === undefined ? undefined : scopesOf(pins.now(), path); }, pin: async (path, scope) => { const pins = page.pins(); return pins === undefined ? 'failed' : pins.pin(scope, path); }, unpin: (path) => page.pins()?.unpin(path) } });
 // the documents put away before a reload, kept by this browser: in the dock as the page opens
 docsChanged();
 // the notes' editor switched — behind ⋯, over a note, over a markdown file: the file being edited goes over to it
@@ -308,13 +309,15 @@ mountSidebarResizer(byId('sidebar', HTMLElement));
 settings.applyAll();
 // A part of an answer copies as markdown, as the answer was written: on Ctrl+Shift+C, and on Ctrl+C when the reader asks.
 listenForCopies(document, () => (settings.get('copy') === 'markdown' ? 'markdown' : 'plain'));
-// File links (marked up by view/file-links.js) open in the right-hand panel, not in the browser.
+// File links (marked up by view/file-links.js) open in the right-hand panel, not in the browser;
+// links inside the panel's own document are followed by filePanel itself.
 document.addEventListener('click', (event) => {
+  if (event.defaultPrevented) return;
   const link = event.target instanceof Element ? event.target.closest('a.file-link') : null;
-  const path = link?.getAttribute('data-path');
-  if (link === null || path === null || path === undefined) return;
+  const target = link === null ? undefined : fileLinkTarget(link);
+  if (target === undefined) return;
   event.preventDefault();
-  filePanel.open({ path, line: lineAttribute(link, 'data-line'), endLine: lineAttribute(link, 'data-end-line') });
+  filePanel.open(target);
 });
 // A 👉 of an answer pressed: what it points at goes into the prompt box, for the answer to be written under it
 document.addEventListener('click', (event) => {
@@ -1223,15 +1226,16 @@ function createPage() {
     /**
      * A note's editor, as it reads — the one chosen in the settings: CodeMirror's live preview, its marks giving way
      * where the cursor is, or Milkdown's blocks; its source CodeMirror's always.
-     * @type {import('./view/notes-view.js').EditorOf}
+     * @param {'panel' | 'outside'} origin — whether the editor is inside the side panel (links keep a way back) or outside
+     * @returns {import('./view/notes-view.js').EditorOf}
      */
-    const noteEditorOf = ({ text, save }) => {
+    const noteEditorOf = (origin) => ({ text, save }) => {
       const editor = createNoteEditor({
         text,
         shown: 'preview',
         placeholder: 'Markdown: # a heading, - a list, ``` code',
         save,
-        onOpen: openFromNote,
+        onOpen: (target) => openFromNote(target, origin),
         mount: mountNotesEditor,
       });
       noteEditors.add(editor);
@@ -1273,7 +1277,7 @@ function createPage() {
             return response?.ok === true;
           },
         },
-        editorOf: noteEditorOf,
+        editorOf: noteEditorOf('panel'),
       });
       noteShown = panel;
       drawers.close();
@@ -1322,7 +1326,7 @@ function createPage() {
       open: openNote,
       setShown: (noteId, shown) => notes.setShown(noteId, shown),
       move: (noteId, before) => notes.move(noteId, before),
-      editorOf: noteEditorOf,
+      editorOf: noteEditorOf('outside'),
       showHistory: () => {
         const history = createNotesHistoryPanel({ steps: () => notes.history(), undo: (step) => notes.undo(step) });
         noteShown = history;
@@ -2628,26 +2632,19 @@ function parseSessions(json) {
  * What a link Ctrl+clicked in a note names: a file — its path in the text, a file: link, a path as a link's address —
  * opens in the side panel at its line; a page on the web in a tab of its own; any other address nowhere.
  * @param {import('./view/note-editor.js').OpenTarget} target
+ * @param {'panel' | 'outside'} origin
  */
-function openFromNote(target) {
+function openFromNote(target, origin) {
+  /** @param {import('./view/file-links.js').FileTarget} file */
+  const openFile = (file) => (origin === 'panel' ? filePanel.follow(file) : filePanel.open(file));
   if ('path' in target) {
-    filePanel.open({ path: target.path, line: target.line, endLine: undefined });
+    openFile({ path: target.path, line: target.line, endLine: undefined });
     return;
   }
   const [whole] = findFileRefs(target.href);
   const file = fileRefFromHref(target.href) ?? (whole !== undefined && whole.index === 0 && whole.text === target.href ? whole : undefined);
-  if (file !== undefined) filePanel.open({ path: file.path, line: file.line, endLine: undefined });
+  if (file !== undefined) openFile({ path: file.path, line: file.line, endLine: undefined });
   else if (/^(?:https?:|mailto:)/i.test(target.href)) window.open(target.href, '_blank', 'noopener,noreferrer');
-}
-
-/**
- * @param {Element} link
- * @param {string} name
- * @returns {number | undefined}
- */
-function lineAttribute(link, name) {
-  const value = Number(link.getAttribute(name));
-  return Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
 /** @param {string} path */

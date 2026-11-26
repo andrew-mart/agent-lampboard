@@ -873,3 +873,365 @@ test('filePanel_Should_PutDocumentAwayByItsButton_KeptToOpenAgain_CrossClosingIt
     },
   );
 });
+
+// Following a link inside a document opens the linked document with a Back button to the one left; a chain of links
+// unwinds step by step until Back hides again
+test('filePanel_Should_GoBackThroughLinkedDocuments_When_FollowingLinksInsidePanel', async () => {
+  serveTexts({
+    'D:/dev/x/docs/README.md': '# Guide\n\nSee [Architecture](arch.md).\n',
+    'D:/dev/x/docs/arch.md': '# Architecture\n\nSee [limits](../src/limits.ts#L7).\n',
+    'D:/dev/x/src/limits.ts': 'export const rate = 10;\n',
+  });
+  const { panel, open } = filePanel();
+  const state = () => {
+    const back = panel.querySelector('.panel-back');
+    assert.ok(back instanceof window.HTMLButtonElement);
+    return {
+      name: panel.querySelector('.panel-name')?.textContent,
+      line: panel.querySelector('.panel-line')?.textContent,
+      back: back.hidden ? undefined : { text: back.textContent, title: back.title, toDoc: back.classList.contains('to-doc') },
+    };
+  };
+  /** @param {string} label */
+  const clickLink = (label) => {
+    const link = [...panel.querySelectorAll('.panel-body a.file-link')].find((one) => one.textContent === label);
+    assert.ok(link instanceof window.HTMLAnchorElement, `no link "${label}"`);
+    link.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+  };
+  const clickBack = () => {
+    const back = panel.querySelector('.panel-back');
+    assert.ok(back instanceof window.HTMLButtonElement);
+    back.click();
+  };
+
+  open('D:/dev/x/docs/README.md');
+  await settled();
+  const atReadme = state();
+
+  clickLink('Architecture');
+  await settled();
+  const atArch = state();
+
+  clickLink('limits');
+  await settled();
+  const atLimits = state();
+
+  clickBack();
+  await settled();
+  const backToArch = state();
+
+  clickBack();
+  await settled();
+  const backToReadme = state();
+
+  assert.deepEqual(
+    { atReadme, atArch, atLimits, backToArch, backToReadme },
+    {
+      atReadme: { name: 'README.md', line: '', back: undefined },
+      atArch: { name: 'arch.md', line: '', back: { text: '← README.md', title: 'Back to D:/dev/x/docs/README.md', toDoc: true } },
+      atLimits: { name: 'limits.ts', line: 'line 7', back: { text: '← arch.md', title: 'Back to D:/dev/x/docs/arch.md', toDoc: true } },
+      backToArch: { name: 'arch.md', line: '', back: { text: '← README.md', title: 'Back to D:/dev/x/docs/README.md', toDoc: true } },
+      backToReadme: { name: 'README.md', line: '', back: undefined },
+    },
+  );
+});
+
+// A link followed from a file opened from Branch changes or Project files unwinds to the file first, then to the list
+test('filePanel_Should_UnwindToOriginList_After_ReturningFromLinkedDocument', async () => {
+  serveTexts({
+    'D:/dev/shop/README.md': '# Shop\n\nSee [Architecture](arch.md).\n',
+    'D:/dev/shop/arch.md': '# Architecture\n',
+  });
+  const backState = (/** @type {HTMLElement} */ panel) => {
+    const back = panel.querySelector('.panel-back');
+    assert.ok(back instanceof window.HTMLButtonElement);
+    return back.hidden ? undefined : { text: back.textContent, toDoc: back.classList.contains('to-doc') };
+  };
+  const clickBack = (/** @type {HTMLElement} */ panel) => {
+    const back = panel.querySelector('.panel-back');
+    assert.ok(back instanceof window.HTMLButtonElement);
+    back.click();
+  };
+  const clickArch = (/** @type {HTMLElement} */ panel) => {
+    const link = panel.querySelector('.panel-body a.file-link');
+    assert.ok(link instanceof window.HTMLAnchorElement);
+    link.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+  };
+
+  // Non-split list: Branch changes
+  const changesPanel = filePanel();
+  changesPanel.files.showChanges({
+    load: async () => ({
+      ok: true,
+      root: 'D:/dev/shop',
+      branch: 'feat',
+      base: { name: 'main', sha: 'a'.repeat(40), how: 'made-from' },
+      commits: [],
+      files: [{ path: 'README.md', oldPath: undefined, status: 'modified', added: 1, removed: 0 }],
+      branches: ['main', 'feat'],
+    }),
+    loadDiff: async () => undefined,
+  });
+  await settled();
+  changesPanel.panel.querySelector('.change-open')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+  await settled();
+  clickArch(changesPanel.panel);
+  await settled();
+  const changesAtArch = { name: changesPanel.panel.querySelector('.panel-name')?.textContent, back: backState(changesPanel.panel) };
+  clickBack(changesPanel.panel);
+  await settled();
+  const changesAtReadme = { name: changesPanel.panel.querySelector('.panel-name')?.textContent, back: backState(changesPanel.panel) };
+  clickBack(changesPanel.panel);
+  const changesBackToList = { name: changesPanel.panel.querySelector('.panel-name')?.textContent, back: backState(changesPanel.panel) };
+
+  // Split list: Project files
+  const projectPanel = filePanel();
+  projectPanel.files.showProject({
+    root: 'D:/dev/shop',
+    listFolder: async (path) => ({ ok: true, path, entries: path === 'D:/dev/shop' ? [{ name: 'README.md', kind: 'file' }, { name: 'arch.md', kind: 'file' }] : [], more: false }),
+    search: async () => undefined,
+    transfer: noTransfer,
+  });
+  await settled();
+  [...projectPanel.panel.querySelectorAll('.project-entry')].find((one) => one.textContent === 'README.md')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await settled();
+  clickArch(projectPanel.panel);
+  await settled();
+  const projectAtArch = { split: projectPanel.panel.classList.contains('split'), name: projectPanel.panel.querySelector('.panel-name')?.textContent, back: backState(projectPanel.panel) };
+  clickBack(projectPanel.panel);
+  await settled();
+  const projectAtReadme = { split: projectPanel.panel.classList.contains('split'), name: projectPanel.panel.querySelector('.panel-name')?.textContent, back: backState(projectPanel.panel) };
+  clickBack(projectPanel.panel);
+  const projectBackToList = { split: projectPanel.panel.classList.contains('split'), name: projectPanel.panel.querySelector('.panel-name')?.textContent, back: backState(projectPanel.panel) };
+
+  assert.deepEqual(
+    { changesAtArch, changesAtReadme, changesBackToList, projectAtArch, projectAtReadme, projectBackToList },
+    {
+      changesAtArch: { name: 'arch.md', back: { text: '← README.md', toDoc: true } },
+      changesAtReadme: { name: 'README.md', back: { text: '← Changes', toDoc: false } },
+      changesBackToList: { name: 'Branch changes', back: undefined },
+      projectAtArch: { split: true, name: 'arch.md', back: { text: '← README.md', toDoc: true } },
+      projectAtReadme: { split: true, name: 'README.md', back: { text: '← Files', toDoc: false } },
+      projectBackToList: { split: false, name: 'Files', back: undefined },
+    },
+  );
+});
+
+// Opening a file fresh from outside, picking another file in the project tree, or closing the panel clears the document
+// link trail; following a link to the exact file already shown adds no duplicate step
+test('filePanel_Should_ClearTrailOnFreshNavigation_And_IgnoreSameTargetFollow', async () => {
+  serveTexts({
+    'D:/dev/shop/README.md': '# Shop\n\nSee [Architecture](arch.md) and [self](README.md).\n',
+    'D:/dev/shop/arch.md': '# Architecture\n',
+    'D:/dev/shop/limits.ts': 'export const rate = 10;\n',
+  });
+  const backState = (/** @type {HTMLElement} */ panel) => {
+    const back = panel.querySelector('.panel-back');
+    assert.ok(back instanceof window.HTMLButtonElement);
+    return back.hidden ? undefined : { text: back.textContent, toDoc: back.classList.contains('to-doc') };
+  };
+
+  // Fresh open from outside clears trail; self-link adds no step
+  const fresh = filePanel();
+  fresh.open('D:/dev/shop/README.md');
+  await settled();
+  fresh.files.follow({ path: 'D:\\dev\\shop\\README.md', line: undefined, endLine: undefined });
+  const afterSelfLink = backState(fresh.panel);
+  fresh.files.follow({ path: 'D:/dev/shop/arch.md', line: undefined, endLine: undefined });
+  const afterFollow = backState(fresh.panel);
+  fresh.open('D:/dev/shop/limits.ts');
+  const afterFreshOpen = backState(fresh.panel);
+
+  // Close + reopen clears trail
+  fresh.files.follow({ path: 'D:/dev/shop/arch.md', line: undefined, endLine: undefined });
+  fresh.files.close();
+  fresh.files.reopen();
+  const afterCloseReopen = backState(fresh.panel);
+
+  // Picking another file directly from the project tree clears trail (reverts to ← Files)
+  const tree = filePanel();
+  tree.files.showProject({
+    root: 'D:/dev/shop',
+    listFolder: async (path) => ({ ok: true, path, entries: path === 'D:/dev/shop' ? [{ name: 'README.md', kind: 'file' }, { name: 'limits.ts', kind: 'file' }] : [], more: false }),
+    search: async () => undefined,
+    transfer: noTransfer,
+  });
+  await settled();
+  [...tree.panel.querySelectorAll('.project-entry')].find((one) => one.textContent === 'README.md')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await settled();
+  tree.files.follow({ path: 'D:/dev/shop/arch.md', line: undefined, endLine: undefined });
+  [...tree.panel.querySelectorAll('.project-entry')].find((one) => one.textContent === 'limits.ts')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  const afterTreePick = backState(tree.panel);
+
+  assert.deepEqual(
+    { afterSelfLink, afterFollow, afterFreshOpen, afterCloseReopen, afterTreePick },
+    {
+      afterSelfLink: undefined,
+      afterFollow: { text: '← README.md', toDoc: true },
+      afterFreshOpen: undefined,
+      afterCloseReopen: undefined,
+      afterTreePick: { text: '← Files', toDoc: false },
+    },
+  );
+});
+
+// Following a link from a note open in the panel leads back to that note; if the note is removed meanwhile, the way
+// back to it goes too
+test('filePanel_Should_ReturnToNote_When_FollowingLinkFromNote_UnlessForgotten', async () => {
+  serveTexts({ 'D:/dev/shop/limits.ts': 'export const rate = 10;\n' });
+  const { panel, files } = filePanel();
+  const noteElement = window.document.createElement('div');
+  noteElement.className = 'note-panel';
+  const noteActions = window.document.createElement('span');
+  noteActions.append(Object.assign(window.document.createElement('button'), { className: 'note-panel-edit' }));
+  const note = { id: 'n1', session: 'a1c2a10b-1111-4222-8333-000000000001', element: noteElement, actions: noteActions, name: () => 'Plan for the week', reload: async () => undefined, summary: () => 'Written today' };
+  const backButton = () => {
+    const button = panel.querySelector('.panel-back');
+    assert.ok(button instanceof window.HTMLButtonElement);
+    return button;
+  };
+
+  files.showNote(note);
+  files.follow({ path: 'D:/dev/shop/limits.ts', line: undefined, endLine: undefined });
+  await settled();
+  const onFile = {
+    name: panel.querySelector('.panel-name')?.textContent,
+    back: backButton().hidden ? undefined : { text: backButton().textContent, title: backButton().title, toDoc: backButton().classList.contains('to-doc') },
+  };
+
+  backButton().click();
+  const backOnNote = {
+    name: panel.querySelector('.panel-name')?.textContent,
+    sameElement: panel.querySelector('.panel-body > .note-panel') === noteElement,
+    hasAction: panel.querySelector('.panel-list-actions .note-panel-edit') !== null,
+    shownDoc: files.shownDoc(),
+    backHidden: backButton().hidden,
+  };
+
+  files.follow({ path: 'D:/dev/shop/limits.ts', line: undefined, endLine: undefined });
+  files.forgetDoc('note:n1');
+  const afterForget = { backHidden: backButton().hidden, fileStillShown: panel.querySelector('.panel-name')?.textContent };
+
+  assert.deepEqual(
+    { onFile, backOnNote, afterForget },
+    {
+      onFile: { name: 'limits.ts', back: { text: '← Plan for the week', title: 'Back to Plan for the week', toDoc: true } },
+      backOnNote: { name: 'Plan for the week', sameElement: true, hasAction: true, shownDoc: 'note:n1', backHidden: true },
+      afterForget: { backHidden: true, fileStillShown: 'limits.ts' },
+    },
+  );
+});
+
+// Following a link to a folder from a document — written with a trailing slash or discovered as a folder by the server —
+// keeps the Back button to the document above the folder's listing
+test('filePanel_Should_ReturnToDocument_When_FollowingLinkToFolder', async (t) => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (/** @type {string | URL | Request} */ address) => {
+    const path = new URL(String(address), 'http://localhost/').searchParams.get('path') ?? '';
+    if (path === 'D:/dev/x/README.md') return new Response(JSON.stringify({ ok: true, content: '# Guide\n' }));
+    if (path === 'D:/dev/x/assets') return new Response(JSON.stringify({ ok: false, error: 'not-a-file' }), { status: 400 });
+    return new Response(JSON.stringify({ ok: false, error: 'not-found' }), { status: 404 });
+  };
+  t.after(() => {
+    globalThis.fetch = realFetch;
+  });
+  const { panel, open, files } = filePanel();
+  const state = () => {
+    const back = panel.querySelector('.panel-back');
+    assert.ok(back instanceof window.HTMLButtonElement);
+    return {
+      name: panel.querySelector('.panel-name')?.textContent,
+      path: panel.querySelector('.panel-path')?.textContent,
+      back: back.hidden ? undefined : { text: back.textContent, toDoc: back.classList.contains('to-doc') },
+    };
+  };
+  const clickBack = () => {
+    const back = panel.querySelector('.panel-back');
+    assert.ok(back instanceof window.HTMLButtonElement);
+    back.click();
+  };
+
+  open('D:/dev/x/README.md');
+  await settled();
+  files.follow({ path: 'D:/dev/x/sub/', line: undefined, endLine: undefined });
+  await settled();
+  const slashedFolder = state();
+  clickBack();
+  await settled();
+  const backFromSlashed = state();
+
+  files.follow({ path: 'D:/dev/x/assets', line: undefined, endLine: undefined });
+  await settled();
+  const plainFolder = state();
+  clickBack();
+  await settled();
+  const backFromPlain = state();
+
+  assert.deepEqual(
+    { slashedFolder, backFromSlashed, plainFolder, backFromPlain },
+    {
+      slashedFolder: { name: 'Files', path: 'D:/dev/x/sub', back: { text: '← README.md', toDoc: true } },
+      backFromSlashed: { name: 'README.md', path: 'D:/dev/x/README.md', back: undefined },
+      plainFolder: { name: 'Files', path: 'D:/dev/x/assets', back: { text: '← README.md', toDoc: true } },
+      backFromPlain: { name: 'README.md', path: 'D:/dev/x/README.md', back: undefined },
+    },
+  );
+});
+
+// Going back restores how the previous document was shown (document or source) and where it was scrolled
+test('filePanel_Should_RestoreViewModeAndScroll_When_GoingBackToDocument', async () => {
+  serveTexts({
+    'D:/dev/x/notes.md': '# Notes\n\nSee [other](other.md).\n',
+    'D:/dev/x/other.md': '# Other\n',
+  });
+  const { panel, open, files } = filePanel();
+  const body = panel.querySelector('.panel-body');
+  assert.ok(body instanceof window.HTMLElement);
+  const backButton = () => {
+    const button = panel.querySelector('.panel-back');
+    assert.ok(button instanceof window.HTMLButtonElement);
+    return button;
+  };
+
+  // Document mode + scroll restored
+  open('D:/dev/x/notes.md');
+  await settled();
+  body.scrollTop = 310;
+  const link = body.querySelector('a.file-link');
+  assert.ok(link instanceof window.HTMLAnchorElement);
+  link.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+  await settled();
+  body.scrollTop = 0;
+  backButton().click();
+  await settled();
+  const backToDoc = {
+    document: body.querySelector('.fv-markdown') !== null,
+    source: body.querySelector('.fv-code') !== null,
+    scrollTop: body.scrollTop,
+  };
+
+  // Source mode + scroll restored
+  const sourceButton = [...panel.querySelectorAll('.panel-view button')].find((one) => one.textContent === 'Source');
+  assert.ok(sourceButton instanceof window.HTMLButtonElement);
+  sourceButton.click();
+  await settled();
+  body.scrollTop = 240;
+  files.follow({ path: 'D:/dev/x/other.md', line: undefined, endLine: undefined });
+  await settled();
+  body.scrollTop = 0;
+  backButton().click();
+  await settled();
+  const backToSource = {
+    document: body.querySelector('.fv-markdown') !== null,
+    source: body.querySelector('.fv-code') !== null,
+    scrollTop: body.scrollTop,
+  };
+
+  assert.deepEqual(
+    { backToDoc, backToSource },
+    {
+      backToDoc: { document: true, source: false, scrollTop: 310 },
+      backToSource: { document: false, source: true, scrollTop: 240 },
+    },
+  );
+});

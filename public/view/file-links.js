@@ -109,3 +109,24 @@ export function markFileLink(link, target) {
   link.removeAttribute('target');
   link.removeAttribute('rel');
 }
+
+/**
+ * The target a marked file link points at, or none when the link carries no path.
+ * @param {Element} link
+ * @returns {FileTarget | undefined}
+ */
+export function fileLinkTarget(link) {
+  const path = link.getAttribute('data-path');
+  if (path === null) return undefined;
+  return { path, line: lineAttribute(link, 'data-line'), endLine: lineAttribute(link, 'data-end-line') };
+}
+
+/**
+ * @param {Element} link
+ * @param {string} name
+ * @returns {number | undefined}
+ */
+function lineAttribute(link, name) {
+  const value = Number(link.getAttribute(name));
+  return Number.isInteger(value) && value > 0 ? value : undefined;
+}

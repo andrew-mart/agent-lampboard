@@ -7078,6 +7078,11 @@ a.file-link:hover {
   display: none;
 }
 
+/* a link followed inside a document still leads back to it, even beside the project's files */
+.file-panel.split .panel-back.to-doc:not([hidden]) {
+  display: inline-block;
+}
+
 /* the files hidden beside the file, which takes the whole panel: the way back to them there again */
 .file-panel.split.tree-hidden .panel-side {
   display: none;
@@ -8043,17 +8048,21 @@ a.file-link:hover {
   display: none;
 }
 
-/* a file opened from the changes: the way back to them */
+/* a file opened from the changes, or a link followed inside a document: the way back */
 .panel-back {
   flex: none;
+  max-width: 180px;
   margin-right: 8px;
   padding: 3px 8px;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: none;
   color: var(--text-2);
   font: inherit;
   font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -13810,6 +13819,7 @@ a.file-link:hover {
   .file-panel .panel-head > .panel-back {
     grid-row: 1;
     grid-column: 1;
+    max-width: 120px;
   }
 
   .file-panel .panel-head > .panel-title {

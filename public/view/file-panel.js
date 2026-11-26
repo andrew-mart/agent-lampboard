@@ -15,7 +15,7 @@ import { createChangesView } from './changes-view.js';
 import { createLinksView } from './links-view.js';
 import { createProjectView } from './project-view.js';
 import { createFileEditor } from './file-editor.js';
-import { linkFileRefs, markFileLink } from './file-links.js';
+import { fileLinkTarget, linkFileRefs, markFileLink } from './file-links.js';
 import { onComputer } from './on-computer.js';
 import { icon } from './icons.js';
 import { createResizer, restoreWidth } from './resizer.js';
@@ -26,8 +26,9 @@ import { createPinButton } from './pin-button.js';
  * @typedef {Omit<import('./project-view.js').ProjectSource, 'openFile' | 'iconOf'>} ProjectSource
  * @typedef {ProjectSource & { links: (path: string) => Promise<import('../model/project.js').FileLinks | undefined> }} Project
  *   — a file's project: its folders, its search, a file's links in it
- * @typedef {{ open: (target: FileTarget) => void, notesEditorChanged: () => void, showChanges: (source: Omit<import('./changes-view.js').ChangesSource, 'openFile'>) => void, showHistory: (history: ShownList) => void, showNote: (note: ShownList & { id: string, session: string, name: () => string, actions: HTMLElement }) => void, listChanged: (list: ShownList) => Promise<void>, showNotesHistory: (history: ShownList) => void, showProject: (source: ProjectSource) => void, showFolder: (path: string) => void, pinsChanged: () => void, findName: (intent: 'definition' | 'uses', name: string, path: string) => Promise<void>, close: () => void, isOpen: () => boolean, reopen: () => boolean, docs: () => readonly DocShown[], shownDoc: () => string | undefined, showDoc: (key: string) => void, forgetDoc: (key: string) => void, top: HTMLElement }} FilePanel
- *   — showChanges: the branch's changes in place of a file, read from the source; showHistory: the conversations of
+ * @typedef {{ open: (target: FileTarget) => void, follow: (target: FileTarget) => void, notesEditorChanged: () => void, showChanges: (source: Omit<import('./changes-view.js').ChangesSource, 'openFile'>) => void, showHistory: (history: ShownList) => void, showNote: (note: ShownList & { id: string, session: string, name: () => string, actions: HTMLElement }) => void, listChanged: (list: ShownList) => Promise<void>, showNotesHistory: (history: ShownList) => void, showProject: (source: ProjectSource) => void, showFolder: (path: string) => void, pinsChanged: () => void, findName: (intent: 'definition' | 'uses', name: string, path: string) => Promise<void>, close: () => void, isOpen: () => boolean, reopen: () => boolean, docs: () => readonly DocShown[], shownDoc: () => string | undefined, showDoc: (key: string) => void, forgetDoc: (key: string) => void, top: HTMLElement }} FilePanel
+ *   — open: a file opened fresh from outside the panel; follow: a link followed from the document shown now, keeping
+ *   the way back to it; showChanges: the branch's changes in place of a file, read from the source; showHistory: the conversations of
  *   herdr's tabs (history-view.js); showProject: the project's files; pinsChanged: the pin over a file drawn again for
  *   the files pinned now; listChanged: a list drawn again, changed elsewhere — the panel's title too, if it is the one
  *   shown;
@@ -57,10 +58,14 @@ import { createPinButton } from './pin-button.js';
  *   — actions: the list's own buttons — a note's — in the panel's head before ↻, in one row with the panel's
  *   — beside: a file opened from the list shows beside it, the list staying on the left — the project's files
  *   — a list in place of a file; name: the panel's title over it; back: the button's word for the way back to it
+ * @typedef {{ kind: 'file', target: FileTarget, view: 'document' | 'source' | 'edit', scrollTop: number } | { kind: 'note', key: string, listing: Listing, scrollTop: number }} TrailEntry
+ *   — a document left by following a link inside it: returned to by the panel's Back button
  */
 
 /** The documents kept once shown, at most: the earliest go past them. */
 const mostDocsKept = 8;
+/** Steps kept in the document link trail, at most. */
+const maxTrail = 50;
 
 /**
  * @param {string} path
@@ -68,6 +73,54 @@ const mostDocsKept = 8;
  */
 function fileNameOf(path) {
   return path.split(/[\\/]/).filter((part) => part !== '').at(-1) ?? path;
+}
+
+/**
+ * @param {FileTarget} first
+ * @param {FileTarget} second
+ */
+function sameTarget(first, second) {
+  return first.path.replaceAll('\\', '/') === second.path.replaceAll('\\', '/') && first.line === second.line && first.endLine === second.endLine;
+}
+
+/**
+ * @param {TrailEntry} entry
+ * @returns {string}
+ */
+function trailLabel(entry) {
+  switch (entry.kind) {
+    case 'file':
+      return fileNameOf(entry.target.path);
+    case 'note': {
+      const title = entry.listing.name().trim();
+      return title === '' ? 'Note' : title;
+    }
+    default: {
+      /** @type {never} */
+      const unknown = entry;
+      throw new Error(`unknown trail entry ${String(unknown)}`);
+    }
+  }
+}
+
+/**
+ * @param {TrailEntry} entry
+ * @returns {string}
+ */
+function trailTitle(entry) {
+  switch (entry.kind) {
+    case 'file':
+      return entry.target.path;
+    case 'note': {
+      const title = entry.listing.name().trim();
+      return title === '' ? 'the note' : title;
+    }
+    default: {
+      /** @type {never} */
+      const unknown = entry;
+      throw new Error(`unknown trail entry ${String(unknown)}`);
+    }
+  }
 }
 
 /** @type {Readonly<Record<string, string>>} */
@@ -205,14 +258,21 @@ export function createFilePanel({ onDocs, markdownEditor, notesEngine, keptDocs,
   putAway.classList.add('panel-put-away');
   putAway.hidden = true;
   const close = panelButton('cross', 'Close');
-  // a file opened from a list — the branch's changes, the project's files — goes back to it
+  // a file opened from a list — the branch's changes, the project's files — or by a link inside a document goes back to it
   const back = h('button', { className: 'panel-back', attrs: { type: 'button' } });
   back.hidden = true;
   const body = h('div', { className: 'panel-body' });
-  // a document's diagram, drawn smaller to fit the panel, shows at its own size on a click — scrolling sideways — and
-  // fits again on the next (style.css)
+  // a file link inside a document opens in the panel, keeping the way back; a diagram drawn smaller to fit the panel
+  // shows at its own size on a click — scrolling sideways — and fits again on the next (style.css)
   body.addEventListener('click', (event) => {
-    const picture = event.target instanceof Element ? event.target.closest('.fv-diagram > img') : null;
+    const link = event.target instanceof window.Element ? event.target.closest('a.file-link') : null;
+    const target = link === null ? undefined : fileLinkTarget(link);
+    if (target !== undefined) {
+      event.preventDefault();
+      api.follow(target);
+      return;
+    }
+    const picture = event.target instanceof window.Element ? event.target.closest('.fv-diagram > img') : null;
     picture?.parentElement?.classList.toggle('natural-size');
   });
   // what the panel says of a button pressed: over the file, which may be scrolled far from its top
@@ -276,6 +336,35 @@ export function createFilePanel({ onDocs, markdownEditor, notesEngine, keptDocs,
   /** @type {Listing | undefined} */
   let listing;
   let showingList = false;
+  let backToList = false;
+  /** The documents left by following links inside them, latest last. @type {TrailEntry[]} */
+  let trail = [];
+  const clearTrail = () => {
+    trail = [];
+  };
+  /** @param {TrailEntry} entry */
+  const pushTrail = (entry) => {
+    trail.push(entry);
+    if (trail.length > maxTrail) trail.shift();
+  };
+  const updateBack = () => {
+    const previous = trail.at(-1);
+    if (previous !== undefined) {
+      back.textContent = `← ${trailLabel(previous)}`;
+      back.title = `Back to ${trailTitle(previous)}`;
+      back.classList.add('to-doc');
+      back.hidden = false;
+      return;
+    }
+    back.classList.remove('to-doc');
+    if (!showingList && backToList && listing !== undefined) {
+      back.textContent = listing.back;
+      back.title = listing.backTitle;
+      back.hidden = false;
+      return;
+    }
+    back.hidden = true;
+  };
   /**
    * The documents the panel showed — files, notes — the latest first, kept once it is put away, until closed for good;
    * the one shown now, if it is one of them.
@@ -336,7 +425,7 @@ export function createFilePanel({ onDocs, markdownEditor, notesEngine, keptDocs,
     // a path that turns out to be a folder shows its files
     text: async (file) => {
       const reply = await readText(file);
-      if (!reply.ok && reply.folder && current?.path === file) api.showFolder(file);
+      if (!reply.ok && reply.folder && current?.path === file) openFolder(file);
       return reply;
     },
     documentUrl: folderAddress,
@@ -373,7 +462,33 @@ export function createFilePanel({ onDocs, markdownEditor, notesEngine, keptDocs,
     scripts.title = pageScripts === 'on' ? "Stop the page's scripts" : "Run the page's scripts — in a sandbox, out of reach of this page";
   };
 
-  const load = (/** @type {FileTarget} */ target) => {
+  /**
+   * Host wrapper that restores the body's scroll right after a text/markdown view renders for this load.
+   * @param {number} turn
+   * @param {number | undefined} restoreScroll
+   * @returns {import('file-views').Host}
+   */
+  const hostForLoad = (turn, restoreScroll) => {
+    if (restoreScroll === undefined || restoreScroll <= 0) return host;
+    return {
+      ...host,
+      text: (file) => {
+        const pending = host.text(file);
+        void pending.then(() =>
+          queueMicrotask(() => {
+            if (turn === asked) body.scrollTop = restoreScroll;
+          }),
+        );
+        return pending;
+      },
+    };
+  };
+
+  /**
+   * @param {FileTarget} target
+   * @param {number} [restoreScroll]
+   */
+  const load = (target, restoreScroll) => {
     loads++;
     asked++;
     const now = asked;
@@ -388,7 +503,17 @@ export function createFilePanel({ onDocs, markdownEditor, notesEngine, keptDocs,
         // on a touch screen a page's frame grows as tall as the page and the panel scrolls it: an iPhone scrolls no
         // frame in the sheet, the swipe going to the session behind it
         const frames = window.matchMedia('(pointer: coarse)').matches ? 'grow' : 'scroll';
-        shown = renderFile(body, target, { view: mode, scripts: pageScripts, frames }, host);
+        shown = renderFile(body, target, { view: mode, scripts: pageScripts, frames }, hostForLoad(now, restoreScroll));
+        if (restoreScroll === undefined) {
+          body.scrollTop = 0;
+        } else if (restoreScroll > 0) {
+          if (kind === 'image') body.scrollTop = restoreScroll;
+          void shown.document.then((docView) => {
+            if (now !== asked) return;
+            if (docView?.scroll !== undefined) docView.scroll.set(restoreScroll);
+            else body.scrollTop = restoreScroll;
+          });
+        }
       },
       () => {
         if (now === asked) body.replaceChildren(h('div', { className: 'panel-message', text: 'The file cannot be shown: the viewer is out of reach.' }));
@@ -498,7 +623,8 @@ export function createFilePanel({ onDocs, markdownEditor, notesEngine, keptDocs,
     pathText.textContent = listing.summary() ?? '';
     pathText.title = '';
     where.textContent = '';
-    for (const button of [view, scripts, editHere, linksButton, inEditor, inVsCode, inFolderSlot, copy, copyPath, back]) button.hidden = true;
+    for (const button of [view, scripts, editHere, linksButton, inEditor, inVsCode, inFolderSlot, copy, copyPath]) button.hidden = true;
+    updateBack();
     pin.show(undefined);
     listActions.replaceChildren(...(listing.actions === undefined ? [] : [listing.actions]));
     listActions.hidden = listing.actions === undefined;
@@ -520,10 +646,9 @@ export function createFilePanel({ onDocs, markdownEditor, notesEngine, keptDocs,
   /** @param {Listing} shownList */
   const showListing = (shownList) => {
     listing = shownList;
+    backToList = false;
     docShown = undefined;
     putAway.hidden = true;
-    back.textContent = shownList.back;
-    back.title = shownList.backTitle;
     showList();
     void readList();
     onDocs();
@@ -543,71 +668,109 @@ export function createFilePanel({ onDocs, markdownEditor, notesEngine, keptDocs,
   };
   /** A file opened from the list, with the way back to it — beside it, for the project's files. @param {FileTarget} target */
   const openFromList = (target) => {
+    clearTrail();
     if (listing?.beside === true) showBeside();
-    api.open(target);
-    back.hidden = false;
+    backToList = true;
+    showFile(target);
+  };
+
+  /** @param {string} path — a folder: its files, as a project of its own */
+  const openFolder = (path) => {
+    const root = path.replace(/(?<=[^\\/:])[\\/]+$/, '');
+    showListing(filesListing(projectShown?.root === root ? projectShown.view : projectViewOf(folder(root))));
+  };
+  /**
+   * @param {FileTarget} target
+   * @param {{ view: 'document' | 'source' | 'edit', scrollTop: number }} [restored]
+   */
+  const showFile = (target, restored) => {
+    // a folder written as one — its slash at the end — shows its files
+    if (restored === undefined && /[\\/]$/.test(target.path)) {
+      openFolder(target.path);
+      return;
+    }
+    current = target;
+    keepDoc({ key: `file:${target.path}`, kind: 'file', target });
+    onDocs();
+    showingList = false;
+    dropListActions();
+    note.hidden = true;
+    // beside the project's files, or along a link trail, the way back stays
+    updateBack();
+    projectShown?.view.select(target.path);
+    copyPath.hidden = false;
+    inFolderSlot.hidden = false;
+    pin.show(target.path);
+    void editor.reach().then((reach) => {
+      if (current === target) offerEditor(reach);
+    });
+    void vscode.then((openFile) => {
+      if (current === target) inVsCode.hidden = openFile === undefined;
+    });
+    name.textContent = target.path.split(/[\\/]/).pop() ?? target.path;
+    headIcon.replaceChildren(iconOf(name.textContent, 'file', false));
+    reload.title = 'Reload file';
+    pathText.textContent = target.path;
+    pathText.title = target.path;
+    where.textContent = lineLabel(target);
+    pageScripts = 'off';
+    panel.hidden = false;
+    layout.classList.add('with-panel');
+    if (restored?.view === 'edit') {
+      startEditing(target);
+      return;
+    }
+    if (restored !== undefined) {
+      mode = restored.view;
+      load(target, restored.scrollTop);
+      return;
+    }
+    // a page linked at a line opens its source there; a markdown document is read drawn — the feed links it at a line
+    // mostly — its source, the line marked, a press away
+    void fileViews().then(
+      ({ kindOfPath }) => {
+        if (current !== target) return;
+        mode = target.line !== undefined && kindOfPath(target.path) !== 'markdown' ? 'source' : 'document';
+        load(target);
+      },
+      () => {
+        if (current === target) load(target);
+      },
+    );
   };
 
   const api = {
     /** @param {FileTarget} target */
     open(target) {
-      // a folder written as one — its slash at the end — shows its files
-      if (/[\\/]$/.test(target.path)) {
-        api.showFolder(target.path);
-        return;
+      clearTrail();
+      backToList = panel.classList.contains('split');
+      showFile(target);
+    },
+    /** @param {FileTarget} target */
+    follow(target) {
+      if (current !== undefined) {
+        if (!sameTarget(current, target)) pushTrail({ kind: 'file', target: current, view: editing ? 'edit' : mode, scrollTop: body.scrollTop });
+      } else if (showingList && listing !== undefined && docShown !== undefined) {
+        const noteDoc = docs.find((one) => one.key === docShown && one.kind === 'note');
+        if (noteDoc !== undefined) pushTrail({ kind: 'note', key: noteDoc.key, listing, scrollTop: body.scrollTop });
       }
-      current = target;
-      keepDoc({ key: `file:${target.path}`, kind: 'file', target });
-      onDocs();
-      showingList = false;
-      dropListActions();
-      note.hidden = true;
-      // beside the project's files, the way back stays: a narrow panel shows one of them at a time
-      back.hidden = !panel.classList.contains('split');
-      projectShown?.view.select(target.path);
-      copyPath.hidden = false;
-      inFolderSlot.hidden = false;
-      pin.show(target.path);
-      void editor.reach().then((reach) => {
-        if (current === target) offerEditor(reach);
-      });
-      void vscode.then((openFile) => {
-        if (current === target) inVsCode.hidden = openFile === undefined;
-      });
-      name.textContent = target.path.split(/[\\/]/).pop() ?? target.path;
-      headIcon.replaceChildren(iconOf(name.textContent, 'file', false));
-      reload.title = 'Reload file';
-      pathText.textContent = target.path;
-      pathText.title = target.path;
-      where.textContent = lineLabel(target);
-      pageScripts = 'off';
-      panel.hidden = false;
-      layout.classList.add('with-panel');
-      // a page linked at a line opens its source there; a markdown document is read drawn — the feed links it at a line
-      // mostly — its source, the line marked, a press away
-      void fileViews().then(
-        ({ kindOfPath }) => {
-          if (current !== target) return;
-          mode = target.line !== undefined && kindOfPath(target.path) !== 'markdown' ? 'source' : 'document';
-          load(target);
-        },
-        () => {
-          if (current === target) load(target);
-        },
-      );
+      showFile(target);
     },
     /** @param {Omit<import('./changes-view.js').ChangesSource, 'openFile'>} source */
     showChanges(source) {
+      clearTrail();
       const changes = createChangesView({ ...source, openFile: (file) => openFromList({ path: file, line: undefined, endLine: undefined }) });
       changes.element.replaceChildren(h('div', { className: 'panel-message', text: 'Reading the branch…' }));
       showListing({ ...changes, name: () => 'Branch changes', icon: 'branch', back: '← Changes', backTitle: "Back to the branch's changes", beside: false, actions: undefined });
     },
     /** @param {ShownList} history */
     showHistory(history) {
+      clearTrail();
       showListing({ ...history, name: () => 'History', icon: 'history', back: '← History', backTitle: 'Back to the history', beside: false, actions: undefined });
     },
     /** @param {ShownList & { id: string, session: string, name: () => string, actions: HTMLElement }} note — a note opened from its name among the notes (note-panel.js), by its id, and the session it was opened from */
     showNote(note) {
+      clearTrail();
       const noteListing = { ...note, icon: 'note', back: '← Note', backTitle: 'Back to the note', beside: false };
       showListing(noteListing);
       keepDoc({ key: `note:${note.id}`, kind: 'note', id: note.id, session: note.session, name: note.name(), listing: noteListing });
@@ -615,6 +778,7 @@ export function createFilePanel({ onDocs, markdownEditor, notesEngine, keptDocs,
     },
     /** @param {ShownList} history — the changes of the session's notes (notes-history-view.js) */
     showNotesHistory(history) {
+      clearTrail();
       showListing({ ...history, name: () => 'Notes history', icon: 'history', back: '← Notes history', backTitle: 'Back to the notes history', beside: false, actions: undefined });
     },
     pinsChanged() {
@@ -627,11 +791,12 @@ export function createFilePanel({ onDocs, markdownEditor, notesEngine, keptDocs,
     },
     /** @param {string} path — a folder: its files, as a project of its own */
     showFolder(path) {
-      const root = path.replace(/(?<=[^\\/:])[\\/]+$/, '');
-      showListing(filesListing(projectShown?.root === root ? projectShown.view : projectViewOf(folder(root))));
+      clearTrail();
+      openFolder(path);
     },
     /** @param {ProjectSource} source */
     showProject(source) {
+      clearTrail();
       // the same project's files as they were left
       showListing(filesListing(projectShown?.root === source.root ? projectShown.view : projectViewOf(source)));
     },
@@ -641,6 +806,7 @@ export function createFilePanel({ onDocs, markdownEditor, notesEngine, keptDocs,
      * @param {string} path — the file the name is in
      */
     async findName(intent, name, path) {
+      clearTrail();
       const source = project(path);
       const known = projectShown?.root === source.root ? projectShown.view : undefined;
       const view = known ?? projectViewOf(source);
@@ -648,8 +814,7 @@ export function createFilePanel({ onDocs, markdownEditor, notesEngine, keptDocs,
       if (known === undefined) showListing(filesListing(view));
       else {
         listing = filesListing(view);
-        back.textContent = listing.back;
-        back.title = listing.backTitle;
+        backToList = false;
         showList();
       }
       const definitions = await view.searchFor({ text: name, mode: 'text', caseSensitive: true, wholeWord: true }, { name });
@@ -660,12 +825,14 @@ export function createFilePanel({ onDocs, markdownEditor, notesEngine, keptDocs,
       }
     },
     close() {
+      clearTrail();
       stopBeside();
       current = undefined;
       listing = undefined;
       showingList = false;
+      backToList = false;
       dropListActions();
-      back.hidden = true;
+      updateBack();
       shown?.dispose();
       shown = undefined;
       stopEditing();
@@ -703,6 +870,7 @@ export function createFilePanel({ onDocs, markdownEditor, notesEngine, keptDocs,
         openKeptNote(doc.id, doc.session);
         return;
       }
+      clearTrail();
       showListing(doc.listing);
       keepDoc(doc);
       onDocs();
@@ -711,6 +879,8 @@ export function createFilePanel({ onDocs, markdownEditor, notesEngine, keptDocs,
     /** @param {string} key */
     forgetDoc(key) {
       if (key === docShown) api.close();
+      trail = trail.filter((entry) => entry.kind !== 'note' || entry.key !== key);
+      updateBack();
       docs = docs.filter((one) => one.key !== key);
       keepDocsOver();
       onDocs();
@@ -744,6 +914,7 @@ export function createFilePanel({ onDocs, markdownEditor, notesEngine, keptDocs,
   });
   linksButton.addEventListener('click', () => {
     if (current === undefined) return;
+    clearTrail();
     const path = current.path;
     const { root, links } = project(path);
     const view = createLinksView({ path, root, load: () => links(path), openFile: openFromList, iconOf });
@@ -753,7 +924,34 @@ export function createFilePanel({ onDocs, markdownEditor, notesEngine, keptDocs,
     if (current !== undefined) load(current);
     else if (showingList) void readList();
   });
-  back.addEventListener('click', showList);
+  const goBack = () => {
+    const previous = trail.pop();
+    if (previous === undefined) {
+      showList();
+      return;
+    }
+    switch (previous.kind) {
+      case 'file':
+        showFile(previous.target, { view: previous.view, scrollTop: previous.scrollTop });
+        return;
+      case 'note': {
+        listing = previous.listing;
+        backToList = false;
+        showList();
+        body.scrollTop = previous.scrollTop;
+        const noteDoc = docs.find((one) => one.key === previous.key);
+        if (noteDoc !== undefined) keepDoc(noteDoc);
+        onDocs();
+        return;
+      }
+      default: {
+        /** @type {never} */
+        const unknown = previous;
+        throw new Error(`unknown trail entry ${String(unknown)}`);
+      }
+    }
+  };
+  back.addEventListener('click', goBack);
   /**
    * The file's text: the text edited, while it is edited here — saved or not — else the file's as the viewer reads it.
    * @param {FileTarget} target
