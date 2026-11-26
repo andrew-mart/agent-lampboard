@@ -1,120 +1,187 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseUploadReply, uploadImages, uploadProgressText } from '../public/model/image-upload.js';
+import { defaultChunkBytes, parseUploadReply, uploadImages, uploadProgressText } from '../public/model/image-upload.js';
 
-/** @param {number} bytes @param {string | undefined} [uploaded] */
-const itemOf = (bytes, uploaded = undefined) => ({
-  mediaType: 'image/jpeg',
-  blob: new Blob([new Uint8Array(bytes)], { type: 'image/jpeg' }),
-  uploaded,
-});
+/**
+ * @param {number} bytes
+ * @param {{ uploaded?: string, partial?: { id: string, offset: number } }} [state]
+ */
+function itemOf(bytes, state = {}) {
+  const data = new Uint8Array(bytes);
+  for (let i = 0; i < bytes; i++) data[i] = (i * 7 + 3) % 251;
+  return {
+    mediaType: 'image/jpeg',
+    blob: new Blob([data], { type: 'image/jpeg' }),
+    uploaded: state.uploaded,
+    partial: state.partial,
+    raw: data,
+  };
+}
 
-test('uploadImages_Should_UploadInBoundedParallelChunks_PreservingOrderAndReportingByteProgress', async () => {
-  const items = [itemOf(100), itemOf(200), itemOf(300), itemOf(400), itemOf(500)];
+test('uploadImages_Should_SendByteChunksSequentiallyByDefault_And_ReportSmoothByteProgress', async () => {
+  assert.equal(defaultChunkBytes, 256 * 1024);
+  const large = itemOf(600 * 1024);
+  const small = itemOf(100 * 1024);
   let inFlight = 0;
   let maxInFlight = 0;
   /** @type {number[]} */
   const percents = [];
-  /** @type {number[]} */
-  const doneCounts = [];
+  /** @type {Array<{ id: string, offset: number, total: number, size: number } | 'whole'>} */
+  const sent = [];
+  /** @type {Uint8Array[]} */
+  const receivedParts = [];
+  /** @type {Array<[number, { id: string, offset: number } | undefined]>} */
+  const partials = [];
   /** @type {Map<number, string>} */
   const notified = new Map();
 
-  const outcome = await uploadImages(items, {
-    concurrency: 2,
+  const outcome = await uploadImages([large, small], {
+    chunkPauseMs: 0,
     retryDelayMs: 0,
     signal: new AbortController().signal,
-    onProgress: (progress) => {
-      percents.push(progress.percent);
-      doneCounts.push(progress.done);
-    },
+    onProgress: (progress) => percents.push(progress.percent),
     onUploaded: (index, name) => notified.set(index, name),
-    upload: async ({ blob }, onBytes) => {
+    onPartial: (index, partial) => partials.push([index, partial]),
+    upload: async ({ blob, chunk }, onBytes) => {
       inFlight++;
       maxInFlight = Math.max(maxInFlight, inFlight);
       onBytes(Math.floor(blob.size / 2));
-      // Earlier smaller items finish slower than later items to verify original order is preserved
-      await new Promise((resolve) => setTimeout(resolve, blob.size === 100 ? 25 : 5));
+      await new Promise((resolve) => setTimeout(resolve, 5));
       onBytes(blob.size);
       inFlight--;
-      return { ok: true, name: `img-${blob.size}.jpg` };
+      if (chunk === undefined) {
+        sent.push('whole');
+        return { ok: true, kind: 'done', name: 'small.jpg' };
+      }
+      sent.push({ id: chunk.id, offset: chunk.offset, total: chunk.total, size: blob.size });
+      receivedParts.push(new Uint8Array(await blob.arrayBuffer()));
+      const next = chunk.offset + blob.size;
+      if (next < chunk.total) return { ok: true, kind: 'chunk', received: next };
+      return { ok: true, kind: 'done', name: 'large.jpg' };
     },
   });
 
-  assert.deepEqual(outcome, { ok: true, names: ['img-100.jpg', 'img-200.jpg', 'img-300.jpg', 'img-400.jpg', 'img-500.jpg'] });
-  assert.equal(maxInFlight, 2);
+  assert.deepEqual(outcome, { ok: true, names: ['large.jpg', 'small.jpg'] });
+  assert.equal(maxInFlight, 1, 'default concurrency must be 1 to avoid head-of-line blocking');
+  assert.equal(sent.length, 4);
+  const chunks = sent.slice(0, 3);
+  assert.ok(chunks.every((entry) => entry !== 'whole'));
+  const [c0, c1, c2] = chunks;
+  assert.ok(c0 !== undefined && c1 !== undefined && c2 !== undefined);
+  assert.equal(c0.offset, 0);
+  assert.equal(c0.size, 256 * 1024);
+  assert.equal(c1.offset, 256 * 1024);
+  assert.equal(c1.size, 256 * 1024);
+  assert.equal(c2.offset, 512 * 1024);
+  assert.equal(c2.size, 88 * 1024);
+  assert.equal(c1.id, c0.id);
+  assert.equal(c2.id, c0.id);
+  assert.equal(sent[3], 'whole');
+
+  const reassembled = Buffer.concat(receivedParts);
+  assert.deepEqual(reassembled, Buffer.from(large.raw));
+  assert.deepEqual(partials, [
+    [0, { id: c0.id, offset: 256 * 1024 }],
+    [0, { id: c0.id, offset: 512 * 1024 }],
+    [0, undefined],
+  ]);
   assert.equal(percents[0], 0);
   assert.equal(percents.at(-1), 100);
-  assert.ok(percents.some((p) => p > 0 && p < 100), `expected intermediate progress: ${percents.join(',')}`);
-  assert.equal(doneCounts.at(-1), 5);
-  assert.deepEqual([...notified.entries()].sort((a, b) => a[0] - b[0]), [
-    [0, 'img-100.jpg'],
-    [1, 'img-200.jpg'],
-    [2, 'img-300.jpg'],
-    [3, 'img-400.jpg'],
-    [4, 'img-500.jpg'],
+  assert.ok(percents.some((p) => p > 10 && p < 40) && percents.some((p) => p > 60 && p < 90), `expected smooth chunk progress, got: ${percents.join(',')}`);
+  assert.deepEqual([...notified.entries()], [
+    [0, 'large.jpg'],
+    [1, 'small.jpg'],
   ]);
 });
 
-test('uploadImages_Should_RetryTransientNetworkOnce_And_ResumeSkippingAlreadyUploaded', async () => {
-  // First run: item 0 succeeds after 1 transient network drop; item 1 already uploaded (skipped); item 2 fails twice; item 3 never started
-  const attempts = new Map();
+test('uploadImages_Should_RetryChunk_ResyncOffsetMismatch_And_ResumeFromPartialOffset', async () => {
+  const kept = itemOf(100 * 1024, { uploaded: 'kept-0.jpg' });
+  const big = itemOf(600 * 1024);
+  const tail = itemOf(100 * 1024);
+  const initial = [kept, big, tail];
+
+  /** @type {Map<number, { id: string, offset: number } | undefined>} */
+  const partials = new Map();
   /** @type {Map<number, string>} */
   const saved = new Map();
-  const initial = [itemOf(100), itemOf(200, 'kept-1.jpg'), itemOf(300), itemOf(400)];
+  /** @type {number[]} */
+  const firstRunOffsets = [];
+  let chunk1Calls = 0;
+  let chunk2Calls = 0;
 
   const first = await uploadImages(initial, {
-    concurrency: 1,
+    chunkPauseMs: 0,
     retryDelayMs: 0,
+    maxChunkRetries: 2,
     signal: new AbortController().signal,
     onProgress: () => undefined,
     onUploaded: (index, name) => saved.set(index, name),
-    upload: async ({ blob }) => {
-      const count = (attempts.get(blob.size) ?? 0) + 1;
-      attempts.set(blob.size, count);
-      if (blob.size === 100 && count === 1) return { ok: false, reason: 'network', message: 'Network drop' };
-      if (blob.size === 300) return { ok: false, reason: 'network', message: 'Server unreachable' };
-      return { ok: true, name: `up-${blob.size}.jpg` };
+    onPartial: (index, partial) => partials.set(index, partial),
+    upload: async ({ blob, chunk }) => {
+      assert.ok(chunk !== undefined);
+      firstRunOffsets.push(chunk.offset);
+      if (chunk.offset === 0) return { ok: true, kind: 'chunk', received: blob.size };
+      if (chunk.offset === 256 * 1024) {
+        chunk1Calls++;
+        // First try drops; second try learns via 409 that the server actually persisted chunk 1 already!
+        if (chunk1Calls === 1) return { ok: false, reason: 'network', message: 'Connection reset' };
+        return { ok: false, reason: 'offset-mismatch', received: 512 * 1024 };
+      }
+      if (chunk.offset === 512 * 1024) {
+        chunk2Calls++;
+        return { ok: false, reason: 'network', message: 'Upload stalled.' };
+      }
+      return { ok: true, kind: 'done', name: 'unexpected.jpg' };
     },
   });
 
   assert.equal(first.ok, false);
   assert.equal(first.reason, 'network');
-  assert.equal(first.done, 2);
-  assert.equal(first.total, 4);
-  assert.equal(attempts.get(100), 2);
-  assert.equal(attempts.get(200), undefined);
-  assert.equal(attempts.get(300), 2);
-  assert.equal(attempts.get(400), undefined);
-  assert.equal(saved.get(0), 'up-100.jpg');
+  assert.equal(first.done, 1);
+  assert.equal(first.total, 3);
+  assert.ok(first.percent > 70, `expected failure percent to include completed chunks, got ${first.percent}`);
+  assert.equal(chunk1Calls, 2);
+  assert.equal(chunk2Calls, 3, 'chunk should try once + 2 automatic retries');
+  assert.deepEqual(firstRunOffsets, [0, 256 * 1024, 256 * 1024, 512 * 1024, 512 * 1024, 512 * 1024]);
+  const savedPartial = partials.get(1);
+  assert.ok(savedPartial !== undefined && savedPartial.offset === 512 * 1024);
 
-  // Second run (resume): items 0 and 1 already have uploaded names → only items 2 and 3 upload
+  // Resume run: starts directly at offset 512 KB of image 1 using the same upload id, then uploads image 2
+  /** @type {Array<{ id: string, offset: number, size: number } | 'whole'>} */
+  const secondRunCalls = [];
   /** @type {number[]} */
-  const resumedSizes = [];
-  /** @type {number[]} */
-  const resumedDone = [];
-  const resumedItems = initial.map((item, index) => ({ ...item, uploaded: item.uploaded ?? saved.get(index) }));
+  const resumedPercents = [];
+  const resumedItems = initial.map((item, index) => ({
+    ...item,
+    uploaded: item.uploaded ?? saved.get(index),
+    partial: partials.get(index),
+  }));
   const second = await uploadImages(resumedItems, {
-    concurrency: 2,
+    chunkPauseMs: 0,
     retryDelayMs: 0,
     signal: new AbortController().signal,
-    onProgress: (progress) => resumedDone.push(progress.done),
+    onProgress: (progress) => resumedPercents.push(progress.percent),
     onUploaded: () => undefined,
-    upload: async ({ blob }) => {
-      resumedSizes.push(blob.size);
-      return { ok: true, name: `up-${blob.size}.jpg` };
+    onPartial: () => undefined,
+    upload: async ({ blob, chunk }) => {
+      if (chunk === undefined) {
+        secondRunCalls.push('whole');
+        return { ok: true, kind: 'done', name: 'tail-2.jpg' };
+      }
+      secondRunCalls.push({ id: chunk.id, offset: chunk.offset, size: blob.size });
+      return { ok: true, kind: 'done', name: 'big-1.jpg' };
     },
   });
 
-  assert.deepEqual(resumedSizes.sort((a, b) => a - b), [300, 400]);
-  assert.equal(resumedDone[0], 2);
-  assert.deepEqual(second, { ok: true, names: ['up-100.jpg', 'kept-1.jpg', 'up-300.jpg', 'up-400.jpg'] });
+  assert.ok((resumedPercents[0] ?? 0) > 70, `expected resumed progress to start from saved chunks, got ${resumedPercents[0]}`);
+  assert.deepEqual(secondRunCalls, [{ id: savedPartial.id, offset: 512 * 1024, size: 88 * 1024 }, 'whole']);
+  assert.deepEqual(second, { ok: true, names: ['kept-0.jpg', 'big-1.jpg', 'tail-2.jpg'] });
 });
 
-test('uploadImages_Should_NotRetryRefusal_And_HandleAbort', async () => {
+test('uploadImages_Should_NotRetryRefusal_And_HandleAbortPreservingPartial', async () => {
   let refusalCalls = 0;
   const refused = await uploadImages([itemOf(100), itemOf(200)], {
-    concurrency: 1,
+    chunkPauseMs: 0,
     retryDelayMs: 0,
     signal: new AbortController().signal,
     onProgress: () => undefined,
@@ -131,24 +198,36 @@ test('uploadImages_Should_NotRetryRefusal_And_HandleAbort', async () => {
   assert.equal(refusalCalls, 1);
 
   const controller = new AbortController();
-  const aborted = await uploadImages([itemOf(100), itemOf(200)], {
-    concurrency: 1,
+  /** @type {{ id: string, offset: number } | undefined} */
+  let keptPartial;
+  const aborted = await uploadImages([itemOf(600 * 1024)], {
+    chunkPauseMs: 0,
     retryDelayMs: 0,
     signal: controller.signal,
     onProgress: () => undefined,
     onUploaded: () => undefined,
-    upload: async (_item, _onBytes, signal) => {
+    onPartial: (_index, partial) => {
+      keptPartial = partial;
+    },
+    upload: async ({ blob, chunk }, _onBytes, signal) => {
+      assert.ok(chunk !== undefined);
+      if (chunk.offset === 0) return { ok: true, kind: 'chunk', received: blob.size };
       controller.abort();
-      return signal.aborted ? { ok: false, reason: 'aborted', message: 'Upload cancelled.' } : { ok: true, name: 'x.jpg' };
+      return signal.aborted ? { ok: false, reason: 'aborted', message: 'Upload cancelled.' } : { ok: true, kind: 'done', name: 'x.jpg' };
     },
   });
 
   assert.equal(aborted.ok, false);
   assert.equal(aborted.reason, 'aborted');
+  assert.ok(aborted.percent > 30, `expected abort percent > 30, got ${aborted.percent}`);
+  assert.ok(keptPartial !== undefined && keptPartial.offset === 256 * 1024);
 });
 
 test('parseUploadReply_And_uploadProgressText_Should_HandleAllOutcomes', () => {
-  assert.deepEqual(parseUploadReply(200, { ok: true, name: '20261126_135000-abcd1234.jpg' }), { ok: true, name: '20261126_135000-abcd1234.jpg' });
+  assert.deepEqual(parseUploadReply(200, { ok: true, name: '20261126_135000-abcd1234.jpg' }), { ok: true, kind: 'done', name: '20261126_135000-abcd1234.jpg' });
+  assert.deepEqual(parseUploadReply(200, { ok: true, done: true, name: '20261126_135000-abcd1234.jpg' }), { ok: true, kind: 'done', name: '20261126_135000-abcd1234.jpg' });
+  assert.deepEqual(parseUploadReply(200, { ok: true, done: false, received: 262144 }), { ok: true, kind: 'chunk', received: 262144 });
+  assert.deepEqual(parseUploadReply(409, { ok: false, error: 'offset-mismatch', received: 524288 }), { ok: false, reason: 'offset-mismatch', received: 524288 });
   assert.deepEqual(parseUploadReply(413, { ok: false, error: 'An attached image must be under 15 MB.' }), { ok: false, reason: 'refused', message: 'An attached image must be under 15 MB.' });
   assert.deepEqual(parseUploadReply(502, undefined), { ok: false, reason: 'network', message: 'The viewer server did not answer.' });
 

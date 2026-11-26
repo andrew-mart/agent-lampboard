@@ -7,7 +7,7 @@ import { pollWhileShown } from './polling.js';
 import { askerNames, btwMessage, composerState, outcomeMessage, parseBtwReply, parseHeldCut, parseLiveState, parseOutcome, parseStopOutcome, promptCutMessage, promptForBox, sideQuestionOf, stopMessage, withCommand, withPasted, withPoint } from '../model/composer.js';
 import { parseDialogReply } from '../model/dialog.js';
 import { parseNewTab } from '../model/herdr.js';
-import { parseUploadReply, uploadImages, uploadProgressText } from '../model/image-upload.js';
+import { defaultStallTimeoutMs, parseUploadReply, uploadImages, uploadProgressText } from '../model/image-upload.js';
 import { isRecord, text as textOf } from '../model/narrow.js';
 import { createPhraseCount } from '../model/phrases.js';
 import { answerBlocks, sideAnswerMarkdown } from '../model/side-answer.js';
@@ -671,8 +671,8 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
   });
   /**
    * The box's prompt to the session: queued while Claude works, as Enter does in the terminal — or now, past the queue,
-   * as its Ctrl+Enter does, an empty box sending what waits there. Attached images upload first in bounded parallel
-   * chunks with a progress bar, resuming from already-uploaded files if interrupted.
+   * as its Ctrl+Enter does, an empty box sending what waits there. Attached images upload first in sequential byte
+   * chunks with a progress bar, resuming from already-uploaded chunks and files if interrupted.
    * @param {'queued' | 'now'} when
    * @param {'typed' | 'through a file'} how — typed into the terminal, or put in a file the agent is told to read
    */
@@ -703,12 +703,16 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
         const controller = new AbortController();
         uploadController = controller;
         const batch = await uploadImages(images, {
-          upload: uploadSingleImage,
+          upload: (request, onBytes, signal) => sendUploadChunk(request, onBytes, signal),
           signal: controller.signal,
           onProgress: (progress) => showUploadBox({ label: uploadProgressText(progress), percent: progress.percent, cancellable: true }),
           onUploaded: (index, name) => {
             const item = images[index];
             if (item !== undefined) attachments.markUploaded(item, name);
+          },
+          onPartial: (index, partial) => {
+            const item = images[index];
+            if (item !== undefined) attachments.setPartial(item, partial);
           },
         });
         uploadController = undefined;
@@ -1028,19 +1032,21 @@ function unexpectedSendReply(value) {
 }
 
 /**
- * @param {{ reason: 'aborted' | 'network' | 'refused', message: string, done: number, total: number }} failure
+ * @param {{ reason: 'aborted' | 'network' | 'refused', message: string, done: number, total: number, percent: number }} failure
  * @returns {string}
  */
 function uploadFailureMessage(failure) {
   switch (failure.reason) {
     case 'aborted':
-      return failure.done > 0 ? `Upload cancelled (${failure.done} of ${failure.total} already uploaded).` : 'Upload cancelled.';
+      if (failure.done > 0) return `Upload cancelled (${failure.done} of ${failure.total} already uploaded).`;
+      if (failure.percent > 0) return `Upload cancelled (${failure.percent}% uploaded).`;
+      return 'Upload cancelled.';
     case 'refused':
       return `${failure.message} The text stays in the box.`;
     case 'network':
-      return failure.done > 0
-        ? `Upload interrupted (${failure.done} of ${failure.total} uploaded). Press Send to continue.`
-        : 'Could not upload the images — the viewer server did not answer. The text stays in the box.';
+      if (failure.done > 0) return `Upload interrupted (${failure.done} of ${failure.total} uploaded). Press Send to continue.`;
+      if (failure.percent > 0) return `Upload interrupted at ${failure.percent}%. Press Send to continue.`;
+      return 'Could not upload the images — the viewer server did not answer. The text stays in the box.';
     default: {
       /** @type {never} */
       const unknown = failure.reason;
@@ -1050,74 +1056,133 @@ function uploadFailureMessage(failure) {
 }
 
 /**
- * Uploads one image as raw bytes to POST /api/upload. Uses XMLHttpRequest in browsers for byte-level progress events;
- * falls back to fetch where XMLHttpRequest is absent (such as Node/JSDOM unit tests).
- * @type {import('../model/image-upload.js').UploadSingle}
+ * @param {import('../model/image-upload.js').UploadChunkSpec | undefined} chunk
+ * @returns {string}
  */
-async function uploadSingleImage({ mediaType, blob }, onBytes, signal) {
-  if (signal.aborted) return { ok: false, reason: 'aborted', message: 'Upload cancelled.' };
-  if (typeof XMLHttpRequest === 'function') return uploadViaXhr(mediaType, blob, onBytes, signal);
-  return uploadViaFetch(mediaType, blob, onBytes, signal);
+function uploadUrl(chunk) {
+  if (chunk === undefined) return '/api/upload';
+  return `/api/upload?id=${encodeURIComponent(chunk.id)}&offset=${chunk.offset}&total=${chunk.total}`;
 }
 
 /**
+ * Uploads one image or byte chunk as raw bytes to POST /api/upload. Uses XMLHttpRequest in browsers for byte-level
+ * progress events and stall detection; falls back to fetch where XMLHttpRequest is absent (Node/JSDOM unit tests).
+ * @param {import('../model/image-upload.js').UploadRequest} request
+ * @param {(loaded: number) => void} onBytes
+ * @param {AbortSignal} signal
+ * @param {number} [stallTimeoutMs]
+ * @returns {Promise<import('../model/image-upload.js').UploadChunkOutcome>}
+ */
+export async function sendUploadChunk(request, onBytes, signal, stallTimeoutMs = defaultStallTimeoutMs) {
+  if (signal.aborted) return { ok: false, reason: 'aborted', message: 'Upload cancelled.' };
+  const url = uploadUrl(request.chunk);
+  if (typeof XMLHttpRequest === 'function') return uploadViaXhr(url, request.mediaType, request.blob, onBytes, signal, stallTimeoutMs);
+  return uploadViaFetch(url, request.mediaType, request.blob, onBytes, signal, stallTimeoutMs);
+}
+
+/**
+ * @param {string} url
  * @param {string} mediaType
  * @param {Blob} blob
  * @param {(loaded: number) => void} onBytes
  * @param {AbortSignal} signal
- * @returns {Promise<import('../model/image-upload.js').UploadSingleOutcome>}
+ * @param {number} stallTimeoutMs
+ * @returns {Promise<import('../model/image-upload.js').UploadChunkOutcome>}
  */
-function uploadViaXhr(mediaType, blob, onBytes, signal) {
+function uploadViaXhr(url, mediaType, blob, onBytes, signal, stallTimeoutMs) {
   return new Promise((resolve) => {
     const request = new XMLHttpRequest();
     let settled = false;
-    /** @param {import('../model/image-upload.js').UploadSingleOutcome} outcome */
+    let stalled = false;
+    let lastLoaded = 0;
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let stallTimer;
+    /** @param {import('../model/image-upload.js').UploadChunkOutcome} outcome */
     const finish = (outcome) => {
       if (settled) return;
       settled = true;
+      if (stallTimer !== undefined) clearTimeout(stallTimer);
       signal.removeEventListener('abort', onAbort);
       resolve(outcome);
+    };
+    const armStallTimer = () => {
+      if (stallTimer !== undefined) clearTimeout(stallTimer);
+      if (stallTimeoutMs <= 0) return;
+      stallTimer = setTimeout(() => {
+        if (settled) return;
+        stalled = true;
+        request.abort();
+        finish({ ok: false, reason: 'network', message: 'Upload stalled — no progress from the viewer server.' });
+      }, stallTimeoutMs);
     };
     const onAbort = () => {
       request.abort();
       finish({ ok: false, reason: 'aborted', message: 'Upload cancelled.' });
     };
     signal.addEventListener('abort', onAbort, { once: true });
-    request.open('POST', '/api/upload');
+    request.open('POST', url);
     request.setRequestHeader('X-Viewer', '1');
     request.setRequestHeader('Content-Type', mediaType);
     request.responseType = 'json';
-    request.upload.addEventListener('progress', (event) => onBytes(event.loaded));
-    request.addEventListener('abort', () => finish({ ok: false, reason: 'aborted', message: 'Upload cancelled.' }));
+    request.upload.addEventListener('progress', (event) => {
+      if (event.loaded > lastLoaded) {
+        lastLoaded = event.loaded;
+        armStallTimer();
+      }
+      onBytes(event.loaded);
+    });
+    request.upload.addEventListener('load', () => armStallTimer());
+    request.addEventListener('abort', () => {
+      if (stalled) return;
+      finish({ ok: false, reason: 'aborted', message: 'Upload cancelled.' });
+    });
     request.addEventListener('error', () => finish({ ok: false, reason: 'network', message: 'The viewer server did not answer.' }));
     request.addEventListener('load', () => {
       if (request.status >= 200 && request.status < 300) onBytes(blob.size);
       finish(parseUploadReply(request.status, request.response));
     });
+    armStallTimer();
     request.send(blob);
   });
 }
 
 /**
+ * @param {string} url
  * @param {string} mediaType
  * @param {Blob} blob
  * @param {(loaded: number) => void} onBytes
  * @param {AbortSignal} signal
- * @returns {Promise<import('../model/image-upload.js').UploadSingleOutcome>}
+ * @param {number} stallTimeoutMs
+ * @returns {Promise<import('../model/image-upload.js').UploadChunkOutcome>}
  */
-async function uploadViaFetch(mediaType, blob, onBytes, signal) {
+async function uploadViaFetch(url, mediaType, blob, onBytes, signal, stallTimeoutMs) {
+  const local = new AbortController();
+  let stalled = false;
+  const onOuterAbort = () => local.abort();
+  signal.addEventListener('abort', onOuterAbort, { once: true });
+  const stallTimer =
+    stallTimeoutMs > 0
+      ? setTimeout(() => {
+          stalled = true;
+          local.abort();
+        }, stallTimeoutMs)
+      : undefined;
   try {
-    const response = await fetch('/api/upload', {
+    const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': mediaType, 'X-Viewer': '1' },
       body: blob,
-      signal,
+      signal: local.signal,
     });
     const body = await response.json().catch(() => undefined);
     if (response.ok) onBytes(blob.size);
     return parseUploadReply(response.status, body);
   } catch {
+    if (stalled) return { ok: false, reason: 'network', message: 'Upload stalled — no progress from the viewer server.' };
     if (signal.aborted) return { ok: false, reason: 'aborted', message: 'Upload cancelled.' };
     return { ok: false, reason: 'network', message: 'The viewer server did not answer.' };
+  } finally {
+    if (stallTimer !== undefined) clearTimeout(stallTimer);
+    signal.removeEventListener('abort', onOuterAbort);
   }
 }

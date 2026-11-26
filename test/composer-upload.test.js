@@ -16,11 +16,25 @@ Object.assign(globalThis, {
   requestAnimationFrame: (/** @type {FrameRequestCallback} */ cb) => setTimeout(cb, 0),
   createImageBitmap: async () => ({ width: 800, height: 600, close() {} }),
 });
-const { createComposer } = await import('../public/view/composer-view.js');
+const { createComposer, sendUploadChunk } = await import('../public/view/composer-view.js');
 const { createAsideStore } = await import('../public/view/aside-store.js');
+const { uploadImages } = await import('../public/model/image-upload.js');
 
 const sessionId = '3f2c9a50-1111-4222-8333-944455556666';
 const settle = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * @param {() => boolean} predicate
+ * @param {number} [timeoutMs]
+ */
+async function waitUntil(predicate, timeoutMs = 4000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await settle(15);
+  }
+  assert.fail('Timed out waiting for condition');
+}
 
 /** @param {number} count */
 function makeFiles(count) {
@@ -124,7 +138,8 @@ test('composer_Should_UploadImagesInChunksWithProgressBar_And_SendUploadNames', 
   const sendBtn = composer.element.querySelector('.composer-send');
   assert.ok(sendBtn instanceof window.HTMLButtonElement);
   sendBtn.click();
-  await settle(160);
+  await waitUntil(() => sendBodies.length === 1);
+  await settle(20);
 
   assert.equal(uploadedSizes.length, 12);
   assert.ok(observedLabels.some((text) => text.includes('of 12')), `expected batch progress label, got: ${observedLabels.join(' | ')}`);
@@ -182,7 +197,7 @@ test('composer_Should_ResumePartialUploadWithoutReuploadingAlreadySavedImages', 
   assert.ok(sendBtn instanceof window.HTMLButtonElement);
 
   sendBtn.click();
-  await settle(800);
+  await waitUntil(() => (composer.element.querySelector('.composer-status')?.textContent ?? '').includes('2 of 4'));
   const statusAfterFail = composer.element.querySelector('.composer-status')?.textContent ?? '';
   assert.ok(statusAfterFail.includes('2 of 4'), `expected partial upload count in status, got: ${statusAfterFail}`);
   assert.equal(sendBodies.length, 0);
@@ -190,7 +205,7 @@ test('composer_Should_ResumePartialUploadWithoutReuploadingAlreadySavedImages', 
 
   failThird = false;
   sendBtn.click();
-  await settle(80);
+  await waitUntil(() => sendBodies.length === 1);
 
   assert.deepEqual(secondRunSizes.sort((a, b) => a - b), [66, 67]);
   assert.equal(sendBodies.length, 1);
@@ -280,7 +295,8 @@ test('composer_Should_ReuploadMissingFilesOnce_When_SendReturns409MissingUploads
   const sendBtn = composer.element.querySelector('.composer-send');
   assert.ok(sendBtn instanceof window.HTMLButtonElement);
   sendBtn.click();
-  await settle(100);
+  await waitUntil(() => sendBodies.length === 2);
+  await settle(20);
 
   // 2 initial uploads + 1 re-upload for the missing first file = 3 uploads total
   assert.equal(uploadedSizes.length, 3);
@@ -357,4 +373,129 @@ test('composer_Should_ReportByteProgressThroughXmlHttpRequest_When_AvailableInBr
   assert.equal(sentHeaders['Content-Type'], 'image/png');
   assert.deepEqual(seenPercents, [50]);
   assert.deepEqual(sendUploads, ['20261126_135000-xhr64.png']);
+});
+
+test('composer_Should_UploadLargeImageIn256KBChunks_And_ResumeFromFailedChunk', async (t) => {
+  let failLastChunk = true;
+  /** @type {Array<{ id: string | null, offset: number, total: number, size: number }>} */
+  const firstRunChunks = [];
+  /** @type {Array<{ id: string | null, offset: number, total: number, size: number }>} */
+  const secondRunChunks = [];
+  /** @type {unknown[]} */
+  const sendBodies = [];
+
+  const { composer, cleanup } = await mountComposer(async (path, init) => {
+    if (path.startsWith('/api/upload')) {
+      const url = new URL(path, 'http://localhost');
+      const id = url.searchParams.get('id');
+      const offset = Number(url.searchParams.get('offset') ?? -1);
+      const total = Number(url.searchParams.get('total') ?? -1);
+      const body = init?.body;
+      const size = body instanceof window.Blob ? body.size : body instanceof Blob ? body.size : 0;
+      const entry = { id, offset, total, size };
+      if (failLastChunk) {
+        firstRunChunks.push(entry);
+        if (offset + size >= total) return new Response('Bad gateway', { status: 502 });
+        return new Response(JSON.stringify({ ok: true, done: false, received: offset + size }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      secondRunChunks.push(entry);
+      return new Response(JSON.stringify({ ok: true, done: true, name: '20261126_144000-big01.png' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (path === '/api/send') {
+      sendBodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ ok: true, pane: 'w1:p1' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response('{}', { status: 200 });
+  });
+  t.after(cleanup);
+
+  const bigBytes = new Uint8Array(600 * 1024);
+  bigBytes.fill(42);
+  attachFiles(composer.element, [new File([bigBytes], 'big.png', { type: 'image/png' })]);
+  await settle(40);
+  const sendBtn = composer.element.querySelector('.composer-send');
+  assert.ok(sendBtn instanceof window.HTMLButtonElement);
+
+  sendBtn.click();
+  await waitUntil(() => (composer.element.querySelector('.composer-status')?.textContent ?? '').includes('Press Send to continue'));
+  const statusAfterFail = composer.element.querySelector('.composer-status')?.textContent ?? '';
+  assert.ok(statusAfterFail.includes('85%'), `expected partial byte percentage in status, got: ${statusAfterFail}`);
+  assert.equal(sendBodies.length, 0);
+  assert.equal(firstRunChunks[0]?.offset, 0);
+  assert.equal(firstRunChunks[0]?.size, 256 * 1024);
+  assert.equal(firstRunChunks[1]?.offset, 256 * 1024);
+  assert.equal(firstRunChunks[1]?.size, 256 * 1024);
+  assert.equal(firstRunChunks[2]?.offset, 512 * 1024);
+  assert.equal(firstRunChunks[2]?.size, 88 * 1024);
+  const uploadId = firstRunChunks[0]?.id;
+  assert.ok(typeof uploadId === 'string' && uploadId.length >= 8);
+
+  failLastChunk = false;
+  sendBtn.click();
+  await waitUntil(() => sendBodies.length === 1);
+
+  assert.deepEqual(secondRunChunks, [{ id: uploadId, offset: 512 * 1024, total: 600 * 1024, size: 88 * 1024 }]);
+  assert.deepEqual(/** @type {Record<string, unknown>} */ (sendBodies[0]).uploads, ['20261126_144000-big01.png']);
+});
+
+test('sendUploadChunk_Should_AbortStalledXhrAfterInactivity_And_RetryToCompletion', async (t) => {
+  let attempt = 0;
+  let abortCount = 0;
+  /** @type {string[]} */
+  const openedUrls = [];
+
+  class StallingXhr extends EventTarget {
+    upload = new EventTarget();
+    status = 0;
+    /** @type {unknown} */
+    response = undefined;
+    responseType = '';
+    /** @param {string} _method @param {string} url */
+    open(_method, url) {
+      openedUrls.push(url);
+    }
+    /** @param {string} _name @param {string} _value */
+    setRequestHeader(_name, _value) {}
+    /** @param {Blob} _blob */
+    send(_blob) {
+      attempt++;
+      if (attempt === 1) {
+        // One early progress tick keeps the timer alive briefly, then hangs forever until stall timeout aborts it
+        setTimeout(() => {
+          const ev = new Event('progress');
+          Object.defineProperty(ev, 'loaded', { value: 64 });
+          this.upload.dispatchEvent(ev);
+        }, 15);
+        return;
+      }
+      setTimeout(() => {
+        this.status = 200;
+        this.response = { ok: true, done: true, name: '20261126_144000-recovered.png' };
+        this.dispatchEvent(new Event('load'));
+      }, 10);
+    }
+    abort() {
+      abortCount++;
+      this.dispatchEvent(new Event('abort'));
+    }
+  }
+
+  Reflect.set(globalThis, 'XMLHttpRequest', StallingXhr);
+  t.after(() => Reflect.deleteProperty(globalThis, 'XMLHttpRequest'));
+
+  const item = { mediaType: 'image/png', blob: new Blob([new Uint8Array(512)], { type: 'image/png' }), uploaded: undefined };
+  const result = await uploadImages([item], {
+    chunkBytes: 1024,
+    chunkPauseMs: 0,
+    retryDelayMs: 5,
+    signal: new AbortController().signal,
+    onProgress: () => undefined,
+    onUploaded: () => undefined,
+    upload: (req, onBytes, signal) => sendUploadChunk(req, onBytes, signal, 45),
+  });
+
+  assert.deepEqual(result, { ok: true, names: ['20261126_144000-recovered.png'] });
+  assert.equal(attempt, 2);
+  assert.equal(abortCount, 1);
+  assert.deepEqual(openedUrls, ['/api/upload', '/api/upload']);
 });

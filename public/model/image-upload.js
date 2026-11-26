@@ -1,39 +1,87 @@
 // @ts-check
-// Chunked upload of attached images: sends images in bounded parallel requests with byte-level progress, one automatic
-// retry on transient network drops, and resume that skips images already saved on the server.
+// Sequential byte-chunked upload of attached images: slices larger images into small chunks (default 256 KB) sent one
+// at a time with brief pauses between chunks so interactive requests never starve on slow links, automatic per-chunk
+// retry and server-offset resync on transient drops, and resume from the exact chunk already persisted on the server.
 import { isRecord, text } from './narrow.js';
 
 /**
- * @typedef {{ readonly mediaType: string, readonly blob: Blob, readonly uploaded: string | undefined }} UploadItem
- * @typedef {{ ok: true, name: string } | { ok: false, reason: 'aborted' | 'network' | 'refused', message: string }} UploadSingleOutcome
- * @typedef {(item: { readonly mediaType: string, readonly blob: Blob }, onBytes: (loaded: number) => void, signal: AbortSignal) => Promise<UploadSingleOutcome>} UploadSingle
+ * @typedef {{ readonly id: string, readonly offset: number }} PartialUpload
+ * @typedef {{ readonly mediaType: string, readonly blob: Blob, readonly uploaded: string | undefined, readonly partial?: PartialUpload | undefined }} UploadItem
+ * @typedef {{ readonly id: string, readonly offset: number, readonly total: number }} UploadChunkSpec
+ * @typedef {{ readonly mediaType: string, readonly blob: Blob, readonly chunk?: UploadChunkSpec | undefined }} UploadRequest
+ * @typedef {
+ *   | { ok: true, kind: 'done', name: string }
+ *   | { ok: true, kind: 'chunk', received: number }
+ *   | { ok: false, reason: 'offset-mismatch', received: number }
+ *   | { ok: false, reason: 'aborted' | 'network' | 'refused', message: string }
+ * } UploadChunkOutcome
+ * @typedef {(request: UploadRequest, onBytes: (loaded: number) => void, signal: AbortSignal) => Promise<UploadChunkOutcome>} UploadSender
  * @typedef {{ readonly done: number, readonly total: number, readonly loadedBytes: number, readonly totalBytes: number, readonly percent: number }} UploadProgress
- * @typedef {{ ok: true, names: readonly string[] } | { ok: false, reason: 'aborted' | 'network' | 'refused', message: string, done: number, total: number }} UploadBatchOutcome
+ * @typedef {
+ *   | { ok: true, names: readonly string[] }
+ *   | { ok: false, reason: 'aborted' | 'network' | 'refused', message: string, done: number, total: number, percent: number }
+ * } UploadBatchOutcome
  */
 
-const defaultConcurrency = 3;
-const defaultRetryDelayMs = 600;
+export const defaultChunkBytes = 256 * 1024;
+export const defaultStallTimeoutMs = 25_000;
+const defaultConcurrency = 1;
+const defaultChunkPauseMs = 40;
+const defaultRetryDelayMs = 500;
+const defaultMaxChunkRetries = 2;
+const maxOffsetResyncs = 3;
 
 /**
- * Uploads attached images in bounded parallel chunks, preserving original order and skipping any item already uploaded.
+ * Uploads attached images sequentially in small byte chunks, preserving original order and resuming from already
+ * uploaded images or partially uploaded byte offsets.
  * @param {readonly UploadItem[]} items
- * @param {{ upload: UploadSingle, onProgress: (progress: UploadProgress) => void, onUploaded: (index: number, name: string) => void, signal: AbortSignal, concurrency?: number, retryDelayMs?: number }} options
+ * @param {{
+ *   upload: UploadSender,
+ *   onProgress: (progress: UploadProgress) => void,
+ *   onUploaded: (index: number, name: string) => void,
+ *   onPartial?: (index: number, partial: PartialUpload | undefined) => void,
+ *   signal: AbortSignal,
+ *   concurrency?: number,
+ *   chunkBytes?: number,
+ *   chunkPauseMs?: number,
+ *   retryDelayMs?: number,
+ *   maxChunkRetries?: number,
+ * }} options
  * @returns {Promise<UploadBatchOutcome>}
  */
-export async function uploadImages(items, { upload, onProgress, onUploaded, signal, concurrency = defaultConcurrency, retryDelayMs = defaultRetryDelayMs }) {
+export async function uploadImages(
+  items,
+  {
+    upload,
+    onProgress,
+    onUploaded,
+    onPartial,
+    signal,
+    concurrency = defaultConcurrency,
+    chunkBytes = defaultChunkBytes,
+    chunkPauseMs = defaultChunkPauseMs,
+    retryDelayMs = defaultRetryDelayMs,
+    maxChunkRetries = defaultMaxChunkRetries,
+  },
+) {
   const total = items.length;
   /** @type {(string | undefined)[]} */
   const names = items.map((item) => item.uploaded);
   const sizes = items.map((item) => item.blob.size);
-  const loaded = items.map((item) => (item.uploaded === undefined ? 0 : item.blob.size));
+  const loaded = items.map((item) => {
+    if (item.uploaded !== undefined) return item.blob.size;
+    if (item.partial !== undefined) return Math.min(item.blob.size, Math.max(0, item.partial.offset));
+    return 0;
+  });
   const totalBytes = sizes.reduce((sum, size) => sum + size, 0);
   let done = names.filter((name) => name !== undefined).length;
 
-  const emitProgress = () => {
+  const snapshot = () => {
     const loadedBytes = loaded.reduce((sum, value) => sum + value, 0);
     const percent = totalBytes > 0 ? Math.min(100, Math.round((loadedBytes / totalBytes) * 100)) : total > 0 ? Math.round((done / total) * 100) : 100;
-    onProgress({ done, total, loadedBytes, totalBytes, percent });
+    return { done, total, loadedBytes, totalBytes, percent };
   };
+  const emitProgress = () => onProgress(snapshot());
   emitProgress();
 
   /** @type {number[]} */
@@ -55,23 +103,97 @@ export async function uploadImages(items, { upload, onProgress, onUploaded, sign
   let nextCursor = 0;
 
   /**
+   * Sends one request with automatic retries on transient network/stall errors.
    * @param {number} index
-   * @param {UploadItem} item
-   * @returns {Promise<UploadSingleOutcome>}
+   * @param {number} baseOffset
+   * @param {number} imageTotal
+   * @param {UploadRequest} request
+   * @returns {Promise<UploadChunkOutcome>}
    */
-  const uploadWithRetry = async (index, item) => {
-    const onBytes = (/** @type {number} */ bytes) => {
-      loaded[index] = Math.min(item.blob.size, Math.max(0, bytes));
+  const sendWithRetries = async (index, baseOffset, imageTotal, request) => {
+    const onBytes = (/** @type {number} */ sliceLoaded) => {
+      const clamped = Math.min(request.blob.size, Math.max(0, sliceLoaded));
+      loaded[index] = Math.min(imageTotal, baseOffset + clamped);
       emitProgress();
     };
-    const first = await upload({ mediaType: item.mediaType, blob: item.blob }, onBytes, batchController.signal);
-    if (first.ok || first.reason !== 'network' || batchController.signal.aborted) return first;
-    loaded[index] = 0;
-    emitProgress();
-    if (!(await waitAbortable(retryDelayMs, batchController.signal))) {
-      return { ok: false, reason: 'aborted', message: 'Upload cancelled.' };
+    for (let attempt = 0; attempt <= maxChunkRetries; attempt++) {
+      const outcome = await upload(request, onBytes, batchController.signal);
+      if (outcome.ok || outcome.reason !== 'network' || batchController.signal.aborted) return outcome;
+      loaded[index] = baseOffset;
+      emitProgress();
+      if (attempt === maxChunkRetries) return outcome;
+      if (!(await waitAbortable(retryDelayMs * (attempt + 1), batchController.signal))) {
+        return { ok: false, reason: 'aborted', message: 'Upload cancelled.' };
+      }
     }
-    return upload({ mediaType: item.mediaType, blob: item.blob }, onBytes, batchController.signal);
+    return { ok: false, reason: 'network', message: 'The viewer server did not answer.' };
+  };
+
+  /**
+   * @param {number} index
+   * @param {UploadItem} item
+   * @returns {Promise<{ ok: true, name: string } | { ok: false, reason: 'aborted' | 'network' | 'refused', message: string }>}
+   */
+  const uploadOne = async (index, item) => {
+    const imageTotal = item.blob.size;
+    if (imageTotal <= chunkBytes && item.partial === undefined) {
+      const outcome = await sendWithRetries(index, 0, imageTotal, { mediaType: item.mediaType, blob: item.blob });
+      if (outcome.ok) {
+        return outcome.kind === 'done'
+          ? { ok: true, name: outcome.name }
+          : { ok: false, reason: 'network', message: 'Unexpected chunk response for whole upload.' };
+      }
+      if (outcome.reason === 'offset-mismatch') {
+        return { ok: false, reason: 'network', message: 'Unexpected upload offset from the viewer server.' };
+      }
+      return outcome;
+    }
+
+    const id = item.partial?.id ?? newUploadId();
+    let offset = item.partial !== undefined && item.partial.offset >= 0 && item.partial.offset < imageTotal ? item.partial.offset : 0;
+    let resyncs = 0;
+
+    while (offset < imageTotal) {
+      const end = Math.min(offset + chunkBytes, imageTotal);
+      const slice = item.blob.slice(offset, end);
+      const outcome = await sendWithRetries(index, offset, imageTotal, {
+        mediaType: item.mediaType,
+        blob: slice,
+        chunk: { id, offset, total: imageTotal },
+      });
+      if (outcome.ok) {
+        if (outcome.kind === 'done') {
+          onPartial?.(index, undefined);
+          return { ok: true, name: outcome.name };
+        }
+        if (outcome.received <= offset || outcome.received > imageTotal) {
+          return { ok: false, reason: 'network', message: 'Unexpected upload offset from the viewer server.' };
+        }
+        offset = outcome.received;
+        loaded[index] = offset;
+        onPartial?.(index, { id, offset });
+        emitProgress();
+        if (!(await waitAbortable(chunkPauseMs, batchController.signal))) {
+          return { ok: false, reason: 'aborted', message: 'Upload cancelled.' };
+        }
+        continue;
+      }
+      if (outcome.reason === 'offset-mismatch') {
+        resyncs++;
+        if (resyncs > maxOffsetResyncs) {
+          return { ok: false, reason: 'network', message: 'Could not synchronize upload offset with the viewer server.' };
+        }
+        offset = outcome.received >= 0 && outcome.received < imageTotal ? outcome.received : 0;
+        loaded[index] = offset;
+        onPartial?.(index, offset > 0 ? { id, offset } : undefined);
+        emitProgress();
+        continue;
+      }
+      loaded[index] = offset;
+      emitProgress();
+      return outcome;
+    }
+    return { ok: false, reason: 'network', message: 'Upload ended without a saved image name.' };
   };
 
   const worker = async () => {
@@ -80,13 +202,20 @@ export async function uploadImages(items, { upload, onProgress, onUploaded, sign
       if (index === undefined) return;
       const item = items[index];
       if (item === undefined) return;
-      const outcome = await uploadWithRetry(index, item);
+      const outcome = await uploadOne(index, item);
       if (outcome.ok) {
         names[index] = outcome.name;
         loaded[index] = item.blob.size;
         done++;
         onUploaded(index, outcome.name);
         emitProgress();
+        if (nextCursor < pending.length && !(await waitAbortable(chunkPauseMs, batchController.signal))) {
+          if (failed === undefined) {
+            failed = { reason: 'aborted', message: 'Upload cancelled.' };
+            batchController.abort();
+          }
+          return;
+        }
       } else if (failed === undefined) {
         failed = { reason: signal.aborted ? 'aborted' : outcome.reason, message: signal.aborted ? 'Upload cancelled.' : outcome.message };
         batchController.abort();
@@ -101,21 +230,35 @@ export async function uploadImages(items, { upload, onProgress, onUploaded, sign
     signal.removeEventListener('abort', onOuterAbort);
   }
 
-  if (failed !== undefined) return { ok: false, reason: failed.reason, message: failed.message, done, total };
-  if (signal.aborted) return { ok: false, reason: 'aborted', message: 'Upload cancelled.', done, total };
+  const finalPercent = snapshot().percent;
+  if (failed !== undefined) return { ok: false, reason: failed.reason, message: failed.message, done, total, percent: finalPercent };
+  if (signal.aborted) return { ok: false, reason: 'aborted', message: 'Upload cancelled.', done, total, percent: finalPercent };
   return { ok: true, names: names.flatMap((name) => (name === undefined ? [] : [name])) };
 }
 
 /**
- * Parses the HTTP response of POST /api/upload.
+ * Parses the HTTP response of POST /api/upload (whole or chunked).
  * @param {number} status — 0 when the request failed before receiving a status
  * @param {unknown} body — parsed JSON response, if any
- * @returns {UploadSingleOutcome}
+ * @returns {UploadChunkOutcome}
  */
 export function parseUploadReply(status, body) {
   if (status >= 200 && status < 300 && isRecord(body) && body.ok === true) {
+    if (body.done === false && typeof body.received === 'number' && Number.isSafeInteger(body.received) && body.received >= 0) {
+      return { ok: true, kind: 'chunk', received: body.received };
+    }
     const name = text(body.name);
-    if (name !== undefined) return { ok: true, name };
+    if (name !== undefined) return { ok: true, kind: 'done', name };
+  }
+  if (
+    status === 409 &&
+    isRecord(body) &&
+    body.error === 'offset-mismatch' &&
+    typeof body.received === 'number' &&
+    Number.isSafeInteger(body.received) &&
+    body.received >= 0
+  ) {
+    return { ok: false, reason: 'offset-mismatch', received: body.received };
   }
   if (status >= 400 && status < 500) {
     const message = isRecord(body) ? (text(body.error) ?? text(body.message)) : undefined;
@@ -132,6 +275,12 @@ export function parseUploadReply(status, body) {
 export function uploadProgressText(progress) {
   if (progress.total <= 1) return progress.percent > 0 ? `Uploading image — ${progress.percent}%` : 'Uploading image…';
   return `Uploading images: ${progress.done} of ${progress.total} (${progress.percent}%)`;
+}
+
+/** @returns {string} */
+function newUploadId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return `u_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 /**

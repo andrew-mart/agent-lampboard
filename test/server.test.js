@@ -1625,6 +1625,94 @@ test('uploadImage_Should_RejectBadRequests_And_SendShouldReportMissingUploadsWit
   );
 });
 
+test('uploadImage_Should_AssembleMultiChunkUpload_HidePartialFiles_And_RecoverOffsetMismatch', async (t) => {
+  const { port, base, root } = await withServer(t);
+  const total = 700 * 1024;
+  const payload = Buffer.alloc(total);
+  for (let i = 0; i < total; i++) payload[i] = i % 251;
+  pngBytes.copy(payload, 0);
+  const chunkSize = 256 * 1024;
+  const uploadId = 'chunked-test-01';
+  const headers = { Origin: `http://127.0.0.1:${port}`, 'X-Viewer': '1', 'Content-Type': 'image/png' };
+  /** @param {number} offset @param {Uint8Array<ArrayBuffer>} slice */
+  const sendChunk = (offset, slice) =>
+    fetch(`${base}/api/upload?id=${uploadId}&offset=${offset}&total=${total}`, { method: 'POST', headers, body: slice });
+
+  const bytes = new Uint8Array(payload);
+  const first = await sendChunk(0, bytes.slice(0, chunkSize));
+  const firstJson = await first.json();
+  const hiddenPartial = await fetch(`${base}/api/upload/.part-${uploadId}.png`);
+  // Client resends wrong offset (e.g. lost reply): server reports exact bytes on disk via 409
+  const mismatch = await sendChunk(100, bytes.slice(100, 200));
+  const mismatchJson = await mismatch.json();
+  const second = await sendChunk(chunkSize, bytes.slice(chunkSize, chunkSize * 2));
+  const secondJson = await second.json();
+  const third = await sendChunk(chunkSize * 2, bytes.slice(chunkSize * 2));
+  const thirdJson = await third.json();
+  // Retrying the final chunk after a dropped 200 ACK returns the same finalized name idempotently
+  const replayFinal = await sendChunk(chunkSize * 2, bytes.slice(chunkSize * 2));
+  const replayFinalJson = await replayFinal.json();
+
+  assert.equal(first.status, 200);
+  assert.deepEqual(firstJson, { ok: true, done: false, received: chunkSize });
+  assert.equal(hiddenPartial.status, 404);
+  assert.equal(mismatch.status, 409);
+  assert.deepEqual(mismatchJson, { ok: false, error: 'offset-mismatch', received: chunkSize });
+  assert.equal(second.status, 200);
+  assert.deepEqual(secondJson, { ok: true, done: false, received: chunkSize * 2 });
+  assert.equal(third.status, 200);
+  assert.equal(thirdJson.ok, true);
+  assert.equal(thirdJson.done, true);
+  assert.equal(typeof thirdJson.name, 'string');
+  assert.equal(replayFinal.status, 200);
+  assert.deepEqual(replayFinalJson, thirdJson);
+
+  const served = await fetch(`${base}/api/upload/${thirdJson.name}`);
+  assert.equal(served.status, 200);
+  assert.deepEqual(Buffer.from(await served.arrayBuffer()), payload);
+  const files = await readdir(join(root, 'uploads'));
+  assert.deepEqual(files, [thirdJson.name]);
+});
+
+test('uploadImage_Should_RejectInvalidChunkParameters_And_OversizedChunks', async (t) => {
+  const { port, base } = await withServer(t);
+  const headers = { Origin: `http://127.0.0.1:${port}`, 'X-Viewer': '1', 'Content-Type': 'image/png' };
+  /** @param {string} query @param {Uint8Array<ArrayBuffer>} body */
+  const send = (query, body) => fetch(`${base}/api/upload?${query}`, { method: 'POST', headers, body });
+  const sample = new Uint8Array(pngBytes);
+
+  const badId = await send('id=../evil&offset=0&total=100', sample);
+  const missingOffset = await send('id=valid-id-01&total=100', sample);
+  const totalTooBig = await send(`id=valid-id-02&offset=0&total=${16 * 1024 * 1024}`, sample);
+  const offsetPastEnd = await send('id=valid-id-03&offset=100&total=100', sample);
+  const exceedsTotal = await send('id=valid-id-04&offset=0&total=4', new Uint8Array(10));
+  const chunkTooBig = await send(`id=valid-id-05&offset=0&total=${2 * 1024 * 1024}`, new Uint8Array(1024 * 1024 + 1));
+  const missingPart = await send('id=valid-id-06&offset=50&total=200', new Uint8Array(50));
+
+  assert.deepEqual(
+    {
+      badId: badId.status,
+      missingOffset: missingOffset.status,
+      totalTooBig: totalTooBig.status,
+      offsetPastEnd: offsetPastEnd.status,
+      exceedsTotal: exceedsTotal.status,
+      chunkTooBig: chunkTooBig.status,
+      missingPartStatus: missingPart.status,
+      missingPartBody: await missingPart.json(),
+    },
+    {
+      badId: 400,
+      missingOffset: 400,
+      totalTooBig: 413,
+      offsetPastEnd: 400,
+      exceedsTotal: 400,
+      chunkTooBig: 413,
+      missingPartStatus: 409,
+      missingPartBody: { ok: false, error: 'offset-mismatch', received: 0 },
+    },
+  );
+});
+
 /** @param {string} uuid @param {string} parentUuid @param {string} text */
 const childPrompt = (uuid, parentUuid, text) =>
   `${JSON.stringify({ type: 'user', uuid, parentUuid, timestamp: at, promptSource: 'typed', message: { role: 'user', content: text } })}\n`;

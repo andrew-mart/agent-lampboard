@@ -55,7 +55,7 @@ import { createChanges } from './changes.js';
 import { moduleGraph } from './module-graph.js';
 import { createTranscriptCache } from './transcript-cache.js';
 import { readTaskOutput, seenTasks } from './tasks.js';
-import { maxImageBytes as maxUploadImageBytes, maxUploads, parseImages, parseImageType, parseUploadNames } from './uploads.js';
+import { maxChunkBytes, maxImageBytes as maxUploadImageBytes, maxUploads, parseImages, parseImageType, parseUploadChunk, parseUploadNames } from './uploads.js';
 import { readPromptLine } from './prompt-files.js';
 import { vscodeBasePath } from './vscode.js';
 
@@ -694,7 +694,7 @@ async function upgradeToVsCode(deps, request, socket, head) {
 async function handleWrite(deps, url, request, response) {
   // a file's bytes as they are: from the viewer's page alone, as its JSON is
   if (url.pathname === '/api/file/upload') return receiveUpload(deps, url, request, response);
-  if (url.pathname === '/api/upload') return receiveImageUpload(deps, request, response);
+  if (url.pathname === '/api/upload') return receiveImageUpload(deps, url, request, response);
   const fromViewer =
     deps.allowedOrigins.has(request.headers.origin ?? '') &&
     (request.headers['content-type'] ?? '').startsWith('application/json') &&
@@ -1993,12 +1993,14 @@ async function sendFolderZip(url, response) {
 }
 
 /**
- * A single attached image uploaded as raw bytes ahead of /api/send, so large batches go chunk by chunk with progress.
+ * An attached image uploaded ahead of /api/send — either whole (for small files) or as sequential byte chunks
+ * (?id=...&offset=...&total=...) so large uploads never hog a slow tunnel and can resume at the chunk level.
  * @param {Deps} deps
+ * @param {URL} url
  * @param {http.IncomingMessage} request
  * @param {http.ServerResponse} response
  */
-async function receiveImageUpload(deps, request, response) {
+async function receiveImageUpload(deps, url, request, response) {
   const fromViewer = deps.allowedOrigins.has(request.headers.origin ?? '') && request.headers['x-viewer'] === '1';
   if (!fromViewer) {
     request.resume();
@@ -2010,19 +2012,41 @@ async function receiveImageUpload(deps, request, response) {
     request.resume();
     return sendJson(response, { ok: false, error: 'Only PNG, JPEG, GIF and WebP images can be attached.' }, 400);
   }
-  if (Number(request.headers['content-length'] ?? 0) > maxUploadImageBytes) {
+  const parsed = parseUploadChunk(url.searchParams);
+  if (parsed.kind === 'invalid') {
     request.resume();
-    return sendJson(response, { ok: false, error: `An attached image must be under ${maxUploadImageBytes / 1024 / 1024} MB.` }, 413);
+    return sendJson(response, { ok: false, error: parsed.error }, 400);
   }
-  const bytes = await readBinaryBody(request, maxUploadImageBytes);
+  if (parsed.kind === 'too-large') {
+    request.resume();
+    return sendJson(response, { ok: false, error: parsed.error }, 413);
+  }
+  const bodyLimit = parsed.kind === 'chunk' ? maxChunkBytes : maxUploadImageBytes;
+  const tooLargeMessage = parsed.kind === 'chunk'
+    ? `An upload chunk must be under ${maxChunkBytes / 1024} KB.`
+    : `An attached image must be under ${maxUploadImageBytes / 1024 / 1024} MB.`;
+  if (Number(request.headers['content-length'] ?? 0) > bodyLimit) {
+    request.resume();
+    return sendJson(response, { ok: false, error: tooLargeMessage }, 413);
+  }
+  const bytes = await readBinaryBody(request, bodyLimit);
+  if (!request.complete) return;
   if (bytes === undefined) {
-    return sendJson(response, { ok: false, error: `An attached image must be under ${maxUploadImageBytes / 1024 / 1024} MB.` }, 413);
+    return sendJson(response, { ok: false, error: tooLargeMessage }, 413);
   }
   if (bytes.length === 0) {
     return sendJson(response, { ok: false, error: 'An attached image must not be empty.' }, 400);
   }
-  const { name } = await deps.uploads.saveOne({ mediaType, bytes });
-  return sendJson(response, { ok: true, name });
+  if (parsed.kind === 'whole') {
+    const { name } = await deps.uploads.saveOne({ mediaType, bytes });
+    return sendJson(response, { ok: true, name });
+  }
+  if (parsed.offset + bytes.length > parsed.total) {
+    return sendJson(response, { ok: false, error: 'Upload chunk exceeds the declared image size.' }, 400);
+  }
+  const outcome = await deps.uploads.appendChunk({ id: parsed.id, mediaType, offset: parsed.offset, total: parsed.total, bytes });
+  if (!outcome.ok) return sendJson(response, outcome, 409);
+  return sendJson(response, outcome);
 }
 
 /**

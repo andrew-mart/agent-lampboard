@@ -5,7 +5,7 @@ import { icon } from './icons.js';
 
 /**
  * An image waiting in the box to be uploaded and sent.
- * @typedef {{ readonly mediaType: string, readonly blob: Blob, uploaded: string | undefined }} AttachedImage
+ * @typedef {{ readonly mediaType: string, readonly blob: Blob, uploaded: string | undefined, partial: import('../model/image-upload.js').PartialUpload | undefined }} AttachedImage
  */
 
 /** A phone photo is scaled down to this long side: enough for Claude to read it, far lighter to send. */
@@ -99,7 +99,7 @@ export function createAttachmentPicker({ onChange, onError, onPrepare }) {
         done++;
         if (ready === undefined) onError(`Could not read ${file.name} as an image.`);
         else {
-          images = [...images, { mediaType: ready.mediaType, blob: ready.blob, uploaded: undefined }];
+          images = [...images, { mediaType: ready.mediaType, blob: ready.blob, uploaded: undefined, partial: undefined }];
           render();
         }
         if (eligible.length > 1) onPrepare?.({ done, total: eligible.length });
@@ -129,13 +129,20 @@ export function createAttachmentPicker({ onChange, onError, onPrepare }) {
     markUploaded(image, name) {
       if (!images.includes(image)) return;
       image.uploaded = name;
+      image.partial = undefined;
       tiles.get(image)?.classList.add('uploaded');
+    },
+    /** @param {AttachedImage} image @param {import('../model/image-upload.js').PartialUpload | undefined} partial */
+    setPartial(image, partial) {
+      if (!images.includes(image)) return;
+      image.partial = partial;
     },
     /** @param {ReadonlySet<string>} names */
     forgetUploaded(names) {
       for (const image of images) {
         if (image.uploaded !== undefined && names.has(image.uploaded)) {
           image.uploaded = undefined;
+          image.partial = undefined;
           tiles.get(image)?.classList.remove('uploaded');
         }
       }
