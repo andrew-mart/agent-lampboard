@@ -49,10 +49,14 @@ async function linkWholeWhereFound(offered) {
   for (const { link, longer } of offered) {
     const rest = longer.text.slice((link.textContent ?? '').length);
     const after = link.nextSibling;
-    if (!existing.has(longer.path) || !(after instanceof Text) || !after.data.startsWith(rest)) continue;
+    if (!existing.has(longer.path) || !(after instanceof window.Text) || !after.data.startsWith(rest)) continue;
     after.data = after.data.slice(rest.length);
     link.textContent = longer.text;
     markFileLink(link, longer);
+    const heading = link.closest('h1, h2, h3, h4, h5, h6');
+    if (heading !== null && heading.querySelectorAll('a.file-link').length === 1 && heading.textContent?.trim() === longer.text.trim()) {
+      heading.classList.add('file-caption');
+    }
   }
 }
 

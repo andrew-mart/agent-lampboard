@@ -215,6 +215,39 @@ test('renderMarkdown_Should_LinkPathThroughFolderWithSpaces_WhenViewerFindsTheFi
   );
 });
 
+// A heading whose entire text is a path with spaces in both folder and file name expands once the viewer confirms the
+// file exists, keeping its line number and turning the heading into a file-caption
+test('renderMarkdown_Should_ExpandSpacedPathInHeading_AndMarkAsFileCaption', async (t) => {
+  const target = 'D:/work/docs/reports/2025-04 - итоги/2025-04 - итоги.md';
+  const before = globalThis.fetch;
+  Object.assign(globalThis, {
+    fetch: async () => new Response(JSON.stringify({ existing: [target] }), { headers: { 'Content-Type': 'application/json' } }),
+  });
+  t.after(() => Object.assign(globalThis, { fetch: before }));
+
+  const holder = html(renderMarkdown(`### ${target}:18\n\n\`\`\`markdown\n18 - note\n\`\`\``));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const heading = holder.querySelector('h3');
+  const link = heading?.querySelector('a.file-link');
+
+  assert.deepEqual(
+    {
+      caption: heading?.classList.contains('file-caption'),
+      text: link?.textContent,
+      path: link?.getAttribute('data-path'),
+      line: link?.getAttribute('data-line'),
+      headingText: heading?.textContent,
+    },
+    {
+      caption: true,
+      text: `${target}:18`,
+      path: target,
+      line: '18',
+      headingText: `${target}:18`,
+    },
+  );
+});
+
 // A formula in an answer — LaTeX between $…$ or \(…\) in a line, between $$…$$ or \[…\] on lines of its own — is
 // typeset; money written with $ is no formula: "$5 and $10" stays as it is
 test('renderMarkdown_Should_TypesetFormulas_AndLeaveMoneyAlone', async () => {

@@ -35,19 +35,27 @@ const fileAddress = String.raw`file:///[^\s"'\`<>|*?()[\]{},;«»“”‘’„
 const fileRefPattern = new RegExp(String.raw`(?<![\w/\\.:~])(?:(${fileAddress})|(${windowsPath}|${posixPath})(?::(\d+)(?:-(\d+)|:\d+)?)?)`, 'g');
 
 /**
- * The rest of a file name with spaces, after a path that ends in a word with no extension: a few more words, the last
- * with an extension, then the line — and the name ends there, before a space, punctuation or the text's end.
+ * A file extension in a spaced path: 1–10 ASCII letters/digits with at least one letter, so numeric dates or versions
+ * ("04.2025", "v1.0") do not cut the path short before its real extension.
  */
-const nameWord = String.raw`[^\s"'\`<>|*?()[\]{},;:/\\«»“”‘’„]+`;
-const spacedName = new RegExp(String.raw`^((?: ${nameWord}){0,5}? ${nameWord}\.[A-Za-z0-9]{1,10})(?::(\d+)(?:-(\d+)|:\d+)?)?(?=$|[\s,;!?)\]»”’"'\`]|\.(?:\s|$))`);
+const fileExtension = String.raw`(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{1,10}`;
+/**
+ * The rest of a file name with spaces, after a path that ends in a word with no extension: a few more words (allowing
+ * balanced parentheses inside the name, like "(копия).pdf"), the last with an extension, then the line — and the name
+ * ends there, before a space, punctuation or the text's end.
+ */
+const nameInner = String.raw`[^\s"'\`<>|*?()[\]{},;:/\\«»“”‘’„]+`;
+const nameWord = String.raw`(?:${nameInner}|\(${nameInner}(?: ${nameInner}){0,3}\))+`;
+const spacedName = new RegExp(String.raw`^((?: ${nameWord}){0,6}? ${nameWord}\.${fileExtension})(?::(\d+)(?:-(\d+)|:\d+)?)?(?=$|[\s,;!?)\]»”’"'\`]|\.(?:\s|$))`);
 
 /**
- * The rest of a path through a folder whose name has spaces, after a path that ends in a word with no extension: a few
- * more words, the last going on through folders to a file's name, then the line. Words after a folder are as often
- * prose — "D:/dev/app файл src/app.ts" — so it is only offered: the viewer tells whether the file is there.
+ * The rest of a path through folders whose names have spaces — and possibly a file name with spaces and balanced
+ * parentheses too — after a path that ends in a word with no extension. Words after a folder are as often prose —
+ * "D:/dev/app файл src/app.ts" — so it is only offered: the viewer tells whether the file is there.
  */
 const pathWord = String.raw`[^\s"'\`<>|*?()[\]{},;:«»“”‘’„]+`;
-const throughFolders = new RegExp(String.raw`^((?: ${pathWord}){0,5}? ${pathWord}[\\/]${pathWord}\.[A-Za-z0-9]{1,10})(?::(\d+)(?:-(\d+)|:\d+)?)?(?=$|[\s,;!?)\]»”’"'\`]|\.(?:\s|$))`);
+const pathSegmentWord = String.raw`(?:${pathWord}|\(${pathWord}(?: ${pathWord}){0,3}\))+`;
+const throughFolders = new RegExp(String.raw`^((?: ${pathSegmentWord}){0,12}? ${pathSegmentWord}\.${fileExtension})(?::(\d+)(?:-(\d+)|:\d+)?)?(?=$|[\s,;!?)\]»”’"'\`]|\.(?:\s|$))`);
 
 /**
  * @param {string} source
@@ -101,7 +109,7 @@ function withSpacedName(source, ref) {
 function throughSpacedFolders(source, ref) {
   if (ref.line !== undefined || endsInFileName(ref.path)) return ref;
   const [tail, rest, line, endLine] = throughFolders.exec(source.slice(ref.index + ref.text.length)) ?? [];
-  if (tail === undefined || rest === undefined) return ref;
+  if (tail === undefined || rest === undefined || !/[\\/]/.test(rest)) return ref;
   return { ...ref, longer: { text: ref.text + tail, path: ref.path + rest, line: lineNumber(line), endLine: lineNumber(endLine) } };
 }
 

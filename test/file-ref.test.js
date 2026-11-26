@@ -153,3 +153,72 @@ test('findFileRefs_Should_TakeFileNameWithSpaces_UpToItsExtension', () => {
     ],
   );
 });
+
+// Paths with spaces in both folder and file names — including long multi-word names, balanced parentheses like
+// "(копия).pdf", and numeric date dots like "04.2025" — offer the full path up to its extension and line, leaving outer
+// parentheses outside; single-folder spaced names with parentheses are linked directly
+test('findFileRefs_Should_HandleSpacesInBothFolderAndFileName_IncludingParensAndDateDots', () => {
+  const longerOf = (/** @type {string} */ source) => findFileRefs(source).map(({ text, longer }) => ({ text, longer }));
+
+  assert.deepEqual(
+    {
+      heading: longerOf('D:/work/docs/reports/2025-04 - итоги/2025-04 - итоги.md:18'),
+      parensInName: longerOf('D:/work/docs/reports/2025-04 - итоги/2025-03-28 сводный отчёт по кварталу (копия).pdf — оригинал'),
+      dateDot: longerOf('D:/work/docs/reports/2025-04 - итоги/04.2025 - итоги.md:4-9'),
+      outerParens: longerOf('(D:/work/docs/reports/2025-04 - итоги/2025-04 - итоги.md)'),
+      singleFolderParens: findFileRefs('Файл D:/work/docs/2025-03-28 сводный отчёт по кварталу (копия).pdf готов').map(({ text, path }) => ({ text, path })),
+    },
+    {
+      heading: [
+        {
+          text: 'D:/work/docs/reports/2025-04',
+          longer: {
+            text: 'D:/work/docs/reports/2025-04 - итоги/2025-04 - итоги.md:18',
+            path: 'D:/work/docs/reports/2025-04 - итоги/2025-04 - итоги.md',
+            line: 18,
+            endLine: undefined,
+          },
+        },
+      ],
+      parensInName: [
+        {
+          text: 'D:/work/docs/reports/2025-04',
+          longer: {
+            text: 'D:/work/docs/reports/2025-04 - итоги/2025-03-28 сводный отчёт по кварталу (копия).pdf',
+            path: 'D:/work/docs/reports/2025-04 - итоги/2025-03-28 сводный отчёт по кварталу (копия).pdf',
+            line: undefined,
+            endLine: undefined,
+          },
+        },
+      ],
+      dateDot: [
+        {
+          text: 'D:/work/docs/reports/2025-04',
+          longer: {
+            text: 'D:/work/docs/reports/2025-04 - итоги/04.2025 - итоги.md:4-9',
+            path: 'D:/work/docs/reports/2025-04 - итоги/04.2025 - итоги.md',
+            line: 4,
+            endLine: 9,
+          },
+        },
+      ],
+      outerParens: [
+        {
+          text: 'D:/work/docs/reports/2025-04',
+          longer: {
+            text: 'D:/work/docs/reports/2025-04 - итоги/2025-04 - итоги.md',
+            path: 'D:/work/docs/reports/2025-04 - итоги/2025-04 - итоги.md',
+            line: undefined,
+            endLine: undefined,
+          },
+        },
+      ],
+      singleFolderParens: [
+        {
+          text: 'D:/work/docs/2025-03-28 сводный отчёт по кварталу (копия).pdf',
+          path: 'D:/work/docs/2025-03-28 сводный отчёт по кварталу (копия).pdf',
+        },
+      ],
+    },
+  );
+});
