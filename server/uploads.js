@@ -1,7 +1,7 @@
 // @ts-check
 // Images attached to prompts from the page: saved as files that Claude Code opens by path, and shown in the feed.
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isRecord } from '../public/model/narrow.js';
 
@@ -18,7 +18,34 @@ const typeOf = { png: 'image/png', jpg: 'image/jpeg', gif: 'image/gif', webp: 'i
 /** The names the viewer gives saved images; nothing else is served from the folder. */
 const savedName = /^[\w-]+\.(png|jpg|gif|webp)$/;
 const maxImages = 10;
-const maxImageBytes = 15 * 1024 * 1024;
+export const maxUploads = 100;
+export const maxImageBytes = 15 * 1024 * 1024;
+
+/**
+ * @param {string | undefined} header — a Content-Type header, optional parameters after ;
+ * @returns {ImageType | undefined}
+ */
+export function parseImageType(header) {
+  const bare = header?.split(';')[0]?.trim().toLowerCase();
+  return isImageType(bare) ? bare : undefined;
+}
+
+/**
+ * Uploaded image names referenced by /api/send; every name must match what the viewer itself generates.
+ * @param {unknown} value — body.uploads, absent when none were uploaded beforehand
+ * @returns {{ ok: true, names: string[] } | { ok: false, error: string }}
+ */
+export function parseUploadNames(value) {
+  if (value === undefined) return { ok: true, names: [] };
+  if (!Array.isArray(value) || value.length > maxUploads) return { ok: false, error: `Attach at most ${maxUploads} images at a time.` };
+  /** @type {string[]} */
+  const names = [];
+  for (const item of value) {
+    if (typeof item !== 'string' || !savedName.test(item)) return { ok: false, error: 'Invalid uploaded image reference.' };
+    names.push(item);
+  }
+  return { ok: true, names };
+}
 
 /**
  * The images of a send request; anything but a short list of base64 raster images refuses the whole request.
@@ -45,22 +72,47 @@ export function parseImages(value) {
  * @param {string} dir — ~/.agent-lampboard/uploads
  */
 export function createUploads(dir) {
+  /**
+   * @param {Image} image
+   * @returns {Promise<{ name: string, path: string }>}
+   */
+  const saveOne = async (image) => {
+    await mkdir(dir, { recursive: true });
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '_');
+    const name = `${stamp}-${randomBytes(4).toString('hex')}.${extensionOf[image.mediaType]}`;
+    const path = join(dir, name);
+    await writeFile(path, image.bytes, { flag: 'wx' });
+    return { name, path };
+  };
   return {
+    saveOne,
     /**
      * @param {readonly Image[]} images
      * @returns {Promise<string[]>} — absolute paths of the saved files, in the same order
      */
     async save(images) {
       if (images.length === 0) return [];
-      await mkdir(dir, { recursive: true });
-      const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '_');
-      return Promise.all(
-        images.map(async (image) => {
-          const path = join(dir, `${stamp}-${randomBytes(4).toString('hex')}.${extensionOf[image.mediaType]}`);
-          await writeFile(path, image.bytes, { flag: 'wx' });
-          return path;
+      const saved = await Promise.all(images.map(saveOne));
+      return saved.map((entry) => entry.path);
+    },
+    /**
+     * Verifies pre-uploaded image names still exist in this folder and returns their paths in the same order.
+     * @param {readonly string[]} names
+     * @returns {Promise<{ ok: true, paths: string[] } | { ok: false, missing: string[] }>}
+     */
+    async resolve(names) {
+      if (names.length === 0) return { ok: true, paths: [] };
+      const checked = await Promise.all(
+        names.map(async (name) => {
+          if (!savedName.test(name)) return { name, path: undefined };
+          const path = join(dir, name);
+          const info = await stat(path).catch(() => undefined);
+          return { name, path: info?.isFile() ? path : undefined };
         }),
       );
+      const missing = checked.flatMap((entry) => (entry.path === undefined ? [entry.name] : []));
+      if (missing.length > 0) return { ok: false, missing };
+      return { ok: true, paths: checked.flatMap((entry) => (entry.path === undefined ? [] : [entry.path])) };
     },
     /** @param {readonly string[]} paths */
     async remove(paths) {

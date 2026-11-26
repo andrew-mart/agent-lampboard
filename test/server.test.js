@@ -65,7 +65,7 @@ const promptLine = (uuid, text) =>
 /**
  * A fake terminal sender: records calls, sends nothing to herdr.
  * @param {string} [takenBack] - the prompt Esc takes back into the box, as if Claude had not started on it
- * @param {string} [refused] - a prompt the terminal does not take
+ * @param {string | ((text: string) => boolean)} [refused] - a prompt the terminal does not take
  */
 function fakeComposer(takenBack, refused) {
   /** @type {string[][]} */
@@ -81,7 +81,8 @@ function fakeComposer(takenBack, refused) {
       /** @param {string} id @param {string} text @returns {Promise<import('../server/composer.js').SendOutcome>} */
       send: async (id, text) => {
         calls.push(['send', id, text]);
-        return text === refused ? { ok: false, error: 'not-typed' } : { ok: true, pane: 'w3D:p1' };
+        const rejected = typeof refused === 'function' ? refused(text) : text === refused;
+        return rejected ? { ok: false, error: 'not-typed' } : { ok: true, pane: 'w3D:p1' };
       },
       /** @param {string} id @param {string} text @returns {Promise<import('../server/composer.js').SendOutcome>} */
       sendNow: async (id, text) => {
@@ -147,7 +148,7 @@ const webWorkspace = {
 
 /**
  * @param {import('node:test').TestContext} t
- * @param {{ takenBack?: string, refused?: string, palette?: import('../public/model/palettes.js').Palette, publicAddresses?: readonly import('../server/app.js').PublicAddress[], sessionRunning?: boolean, editor?: 'set' | 'none', vscode?: import('../server/vscode.js').VsCode | undefined, codexRoot?: string | undefined, codexInUse?: boolean, chatgptUsage?: import('../public/model/usage.js').Usage | undefined, agyUsage?: import('../public/model/usage.js').Usage | undefined, agyModels?: readonly import('../public/model/agy-models.js').AgyModel[] | undefined, agy?: string | undefined, agyRewound?: { conversation: string, step: number, at: number } | undefined, sessionStatus?: import('../public/model/session-status.js').SessionStatus | undefined, statusRead?: Promise<unknown>, paneFolder?: string | undefined }} [options] - takenBack: see
+ * @param {{ takenBack?: string, refused?: string | ((text: string) => boolean), palette?: import('../public/model/palettes.js').Palette, publicAddresses?: readonly import('../server/app.js').PublicAddress[], sessionRunning?: boolean, editor?: 'set' | 'none', vscode?: import('../server/vscode.js').VsCode | undefined, codexRoot?: string | undefined, codexInUse?: boolean, chatgptUsage?: import('../public/model/usage.js').Usage | undefined, agyUsage?: import('../public/model/usage.js').Usage | undefined, agyModels?: readonly import('../public/model/agy-models.js').AgyModel[] | undefined, agy?: string | undefined, agyRewound?: { conversation: string, step: number, at: number } | undefined, sessionStatus?: import('../public/model/session-status.js').SessionStatus | undefined, statusRead?: Promise<unknown>, paneFolder?: string | undefined }} [options] - takenBack: see
  *   fakeComposer; refused: a prompt the terminal does not take; palette, publicAddresses: what the viewer is started with; sessionRunning: whether Claude Code has the
  *   session open; editor: whether the viewer opens files in an editor — the files it is asked to open are recorded;
  *   vscode: VS Code's web server behind /vscode/; codexRoot: Codex's sessions folder; codexInUse: whether Codex has a
@@ -1529,6 +1530,99 @@ test('upload_Should_ServeOnlyImagesTheViewerSaved', async (t) => {
   const statuses = await Promise.all(['/api/upload/..%2Foutside.png', '/api/upload/missing.png', '/api/upload/notes.txt'].map(async (path) => (await fetch(`${base}${path}`)).status));
 
   assert.deepEqual(statuses, [404, 404, 404]);
+});
+
+test('uploadImage_Should_SaveBinaryImagesIndividually_And_SendPromptWithMoreThanTenUploads', async (t) => {
+  const { port, base, calls } = await withServer(t);
+  /** @type {string[]} */
+  const names = [];
+  for (let i = 0; i < 12; i++) {
+    const response = await fetch(`${base}/api/upload`, {
+      method: 'POST',
+      headers: { Origin: `http://127.0.0.1:${port}`, 'X-Viewer': '1', 'Content-Type': 'image/png' },
+      body: pngBytes,
+    });
+    assert.equal(response.status, 200);
+    const json = await response.json();
+    assert.equal(json.ok, true);
+    assert.equal(typeof json.name, 'string');
+    names.push(json.name);
+  }
+
+  const sendResponse = await post(port, '/api/send', pageHeaders(port), JSON.stringify({ session: sessionId, text: 'Check all 12 pages', uploads: names }));
+
+  assert.equal(sendResponse.status, 200);
+  const sent = calls[0]?.[2] ?? '';
+  const lines = sent.split('\n');
+  assert.equal(lines[0], 'Check all 12 pages');
+  assert.equal(lines[2], 'Attached images:');
+  const paths = lines.slice(3);
+  assert.equal(paths.length, 12);
+  assert.deepEqual(
+    paths.map((filePath) => basename(filePath)),
+    names,
+  );
+  assert.deepEqual(await readFile(paths[0] ?? ''), pngBytes);
+});
+
+test('uploadImage_Should_RejectBadRequests_And_SendShouldReportMissingUploadsWithoutDeletingOnRefusal', async (t) => {
+  const { port, base, calls } = await withServer(t, { refused: (/** @type {string} */ text) => text.startsWith('Refuse me') });
+  const noViewer = await fetch(`${base}/api/upload`, {
+    method: 'POST',
+    headers: { Origin: `http://127.0.0.1:${port}`, 'Content-Type': 'image/png' },
+    body: pngBytes,
+  });
+  const svgType = await fetch(`${base}/api/upload`, {
+    method: 'POST',
+    headers: { Origin: `http://127.0.0.1:${port}`, 'X-Viewer': '1', 'Content-Type': 'image/svg+xml' },
+    body: Buffer.from('<svg/>'),
+  });
+  const emptyBody = await fetch(`${base}/api/upload`, {
+    method: 'POST',
+    headers: { Origin: `http://127.0.0.1:${port}`, 'X-Viewer': '1', 'Content-Type': 'image/png' },
+    body: Buffer.alloc(0),
+  });
+  const badName = await post(port, '/api/send', pageHeaders(port), JSON.stringify({ session: sessionId, text: 'Look', uploads: ['../outside.png'] }));
+  const missing = await post(port, '/api/send', pageHeaders(port), JSON.stringify({ session: sessionId, text: 'Look', uploads: ['20261126_000000-deadbeef.png'] }));
+  const missingJson = JSON.parse(missing.body);
+
+  // Pre-uploaded image stays on disk even if /api/send is refused by the terminal, so retry does not re-upload it
+  const uploaded = await fetch(`${base}/api/upload`, {
+    method: 'POST',
+    headers: { Origin: `http://127.0.0.1:${port}`, 'X-Viewer': '1', 'Content-Type': 'image/png' },
+    body: pngBytes,
+  });
+  const { name } = await uploaded.json();
+  const refusedSend = await post(port, '/api/send', pageHeaders(port), JSON.stringify({ session: sessionId, text: 'Refuse me', uploads: [name] }));
+  const stillThere = await fetch(`${base}/api/upload/${name}`);
+  const retriedSend = await post(port, '/api/send', pageHeaders(port), JSON.stringify({ session: sessionId, text: 'Accept me', uploads: [name] }));
+
+  assert.deepEqual(
+    {
+      noViewer: noViewer.status,
+      svgType: svgType.status,
+      emptyBody: emptyBody.status,
+      badName: badName.status,
+      missingStatus: missing.status,
+      missingJson,
+      refusedOutcome: JSON.parse(refusedSend.body),
+      stillThere: stillThere.status,
+      retriedOutcome: JSON.parse(retriedSend.body),
+      calls: calls.length,
+    },
+    {
+      noViewer: 403,
+      svgType: 400,
+      emptyBody: 400,
+      badName: 400,
+      missingStatus: 409,
+      missingJson: { ok: false, error: 'missing-uploads', missing: ['20261126_000000-deadbeef.png'] },
+      refusedOutcome: { ok: false, error: 'not-typed' },
+      stillThere: 200,
+      retriedOutcome: { ok: true, pane: 'w3D:p1' },
+      calls: 2,
+    },
+  );
 });
 
 /** @param {string} uuid @param {string} parentUuid @param {string} text */

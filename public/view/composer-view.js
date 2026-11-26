@@ -7,6 +7,8 @@ import { pollWhileShown } from './polling.js';
 import { askerNames, btwMessage, composerState, outcomeMessage, parseBtwReply, parseHeldCut, parseLiveState, parseOutcome, parseStopOutcome, promptCutMessage, promptForBox, sideQuestionOf, stopMessage, withCommand, withPasted, withPoint } from '../model/composer.js';
 import { parseDialogReply } from '../model/dialog.js';
 import { parseNewTab } from '../model/herdr.js';
+import { parseUploadReply, uploadImages, uploadProgressText } from '../model/image-upload.js';
+import { isRecord, text as textOf } from '../model/narrow.js';
 import { createPhraseCount } from '../model/phrases.js';
 import { answerBlocks, sideAnswerMarkdown } from '../model/side-answer.js';
 import { completeCommand, parseCommands } from '../model/command-suggest.js';
@@ -120,7 +122,33 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
   let focusPending = focusBox === 'when-ready' && keyboard === 'physical';
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let noticeTimer;
-  const attachments = createAttachmentPicker({ onChange: () => refreshButtons(), onError: (message) => say(message, 'error') });
+  /** Active chunked image upload, cancelled by Cancel or on dispose. @type {AbortController | undefined} */
+  let uploadController;
+  const uploadLabel = h('span', { className: 'composer-upload-label' });
+  const uploadCancel = h('button', { className: 'composer-upload-cancel', text: 'Cancel', attrs: { type: 'button' } });
+  const uploadBar = h('progress', { className: 'composer-upload-bar', attrs: { max: '100', value: '0' } });
+  const uploadBox = h('div', { className: 'composer-upload', attrs: { hidden: '', role: 'status', 'aria-live': 'polite' } }, [
+    h('div', { className: 'composer-upload-head' }, [uploadLabel, uploadCancel]),
+    uploadBar,
+  ]);
+  uploadCancel.addEventListener('click', () => uploadController?.abort());
+  /** @param {{ label: string, percent: number, cancellable: boolean } | undefined} state */
+  const showUploadBox = (state) => {
+    uploadBox.hidden = state === undefined;
+    if (state === undefined) return;
+    uploadLabel.textContent = state.label;
+    uploadBar.value = state.percent;
+    uploadCancel.hidden = !state.cancellable;
+  };
+  const attachments = createAttachmentPicker({
+    onChange: () => refreshButtons(),
+    onError: (message) => say(message, 'error'),
+    onPrepare: (state) => {
+      if (sending) return;
+      if (state === undefined) showUploadBox(undefined);
+      else showUploadBox({ label: `Preparing images: ${state.done} of ${state.total}`, percent: Math.round((state.done / state.total) * 100), cancellable: false });
+    },
+  });
   // a box taller than a few lines folds to them: a long text pasted in need not cover the conversation
   const fold = h('button', { className: 'icon-button composer-fold', attrs: { type: 'button', hidden: '' } });
   let folded = false;
@@ -323,7 +351,7 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
     say(why, 'busy');
     refreshButtons();
   };
-  const element = h('div', { className: 'composer' }, [dialogCard.element, aside, queued, laterList.element, waitingBox, resume, form, h('div', { className: 'composer-footer' }, [hint, h('div', { className: 'composer-said' }, [status, throughFile])]), attachments.input]);
+  const element = h('div', { className: 'composer' }, [dialogCard.element, aside, queued, laterList.element, waitingBox, resume, form, uploadBox, h('div', { className: 'composer-footer' }, [hint, h('div', { className: 'composer-said' }, [status, throughFile])]), attachments.input]);
 
   const fit = () => {
     input.style.height = 'auto';
@@ -341,15 +369,16 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
     fold.replaceChildren(icon(folded ? 'unfold' : 'fold'));
   };
   const refreshButtons = () => {
-    send.disabled = !enabled || sending || asking || (input.value.trim() === '' && attachments.images().length === 0);
+    const busySending = sending || attachments.preparing();
+    send.disabled = !enabled || busySending || asking || (input.value.trim() === '' && attachments.images().length === 0);
     sendNowButton.disabled = send.disabled || !reachable;
     throughFile.disabled = send.disabled;
     // setting aside and images need the viewer: out of its reach the box only sends, to wait
     setAsideButton.disabled = !enabled || !reachable || input.value.trim() === '';
-    laterList.allowSend(enabled && reachable && input.value.trim() === '' && attachments.images().length === 0);
+    laterList.allowSend(enabled && reachable && !busySending && input.value.trim() === '' && attachments.images().length === 0);
     input.disabled = !enabled;
-    attachments.button.disabled = !enabled || !reachable;
-    paste.disabled = !enabled;
+    attachments.button.disabled = !enabled || !reachable || sending;
+    paste.disabled = !enabled || sending;
     clear.disabled = !enabled;
     // nothing in the box, nothing to clear
     clear.hidden = input.value === '';
@@ -431,7 +460,7 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
   };
   /**
    * @param {'/api/send' | '/api/interrupt' | '/api/btw' | '/api/dialog' | '/api/history/reopen' | '/api/cut-taken'} path
-   * @param {{ text?: string, images?: readonly import('./attachment-picker.js').AttachedImage[], now?: true, id?: string, question?: string, resume?: true, steps?: readonly import('../model/dialog.js').DialogStep[], shown?: string }} payload — now: past
+   * @param {{ text?: string, images?: readonly never[], uploads?: readonly string[], now?: true, id?: string, question?: string, resume?: true, steps?: readonly import('../model/dialog.js').DialogStep[], shown?: string }} payload — now: past
    *   Claude Code's queue; id: a prompt's, typed once however often it is sent; shown: the options of the dialog answered; resume: a side question's answer asked
    *   for again, the question not asked anew
    * @param {string} [session] - whose: the box's session unless another
@@ -444,6 +473,41 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
       body: JSON.stringify({ session, ...payload }),
     }).catch(() => undefined);
     return response?.ok ? response.json().catch(() => undefined) : undefined;
+  };
+  /**
+   * Posts a prompt to /api/send, distinguishing terminal outcomes, missing pre-uploaded files (409), server refusals
+   * (4xx), and unreachable/5xx errors.
+   * @param {{ text: string, uploads?: readonly string[], images?: readonly never[], id: string, now?: true, throughFile?: true }} payload
+   * @returns {Promise<{ kind: 'outcome', outcome: import('../model/composer.js').SendOutcome } | { kind: 'missing-uploads', missing: readonly string[] } | { kind: 'refused', message: string } | { kind: 'unreachable' }>}
+   */
+  const postSend = async (payload) => {
+    const response = await fetch('/api/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Viewer': '1' },
+      body: JSON.stringify({ session: sessionId, ...payload }),
+    }).catch(() => undefined);
+    if (response === undefined) return { kind: 'unreachable' };
+    const raw = await response.text().catch(() => '');
+    /** @type {unknown} */
+    let json;
+    try {
+      json = raw === '' ? undefined : JSON.parse(raw);
+    } catch {
+      json = undefined;
+    }
+    if (response.ok) {
+      const outcome = parseOutcome(json);
+      return outcome === undefined ? { kind: 'unreachable' } : { kind: 'outcome', outcome };
+    }
+    if (response.status === 409 && isRecord(json) && json.error === 'missing-uploads' && Array.isArray(json.missing)) {
+      const missing = json.missing.filter((one) => typeof one === 'string');
+      if (missing.length > 0) return { kind: 'missing-uploads', missing };
+    }
+    if (response.status >= 400 && response.status < 500) {
+      const message = (isRecord(json) ? (textOf(json.message) ?? textOf(json.error)) : undefined) ?? (raw.trim() === '' ? undefined : raw.trim());
+      if (message !== undefined) return { kind: 'refused', message };
+    }
+    return { kind: 'unreachable' };
   };
   /**
    * The images of a prompt that came back, attached again: the viewer still has them.
@@ -607,48 +671,101 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
   });
   /**
    * The box's prompt to the session: queued while Claude works, as Enter does in the terminal — or now, past the queue,
-   * as its Ctrl+Enter does, an empty box sending what waits there.
+   * as its Ctrl+Enter does, an empty box sending what waits there. Attached images upload first in bounded parallel
+   * chunks with a progress bar, resuming from already-uploaded files if interrupted.
    * @param {'queued' | 'now'} when
    * @param {'typed' | 'through a file'} how — typed into the terminal, or put in a file the agent is told to read
    */
   const submitPrompt = (when, how) => {
     const now = when === 'now' && busy;
-    if (now ? !enabled || sending || asking : send.disabled) return;
+    if (now ? !enabled || sending || asking || attachments.preparing() : send.disabled) return;
     const question = sideQuestionOf(input.value, agent);
     if (question !== undefined) return askAside(question);
-    const images = attachments.images();
+    const images = [...attachments.images()];
     if (!reachable) {
       if (images.length > 0) return say('Images go only while the viewer answers — the text and the images stay in the box.', 'error');
       return waitToSend(newPromptId(), input.value, 'The viewer is out of reach: the prompt waits here and goes once the viewer is back.');
     }
     sending = true;
+    attachments.setLocked(true);
     refreshButtons();
-    // at once: under a heavy load the terminal may take a while to take it
-    say(images.length > 0 ? `Sending ${images.length === 1 ? 'the image' : `${images.length} images`} to the terminal…` : 'Sending to the terminal…', 'busy');
     const text = input.value;
     // the id it goes by: should its reply not come, it waits under it and, sent again, is typed once
     const id = newPromptId();
-    void post('/api/send', { text, images, id, ...(now ? { now: true } : {}), ...(how === 'through a file' ? { throughFile: true } : {}) }).then((json) => {
-      const outcome = parseOutcome(json);
+    const flags = { ...(now ? { now: /** @type {const} */ (true) } : {}), ...(how === 'through a file' ? { throughFile: /** @type {const} */ (true) } : {}) };
+
+    /** @param {boolean} allowReupload @returns {Promise<void>} */
+    const run = async (allowReupload) => {
+      /** @type {readonly string[] | undefined} */
+      let uploads;
+      if (images.length > 0) {
+        say('', 'ok');
+        const controller = new AbortController();
+        uploadController = controller;
+        const batch = await uploadImages(images, {
+          upload: uploadSingleImage,
+          signal: controller.signal,
+          onProgress: (progress) => showUploadBox({ label: uploadProgressText(progress), percent: progress.percent, cancellable: true }),
+          onUploaded: (index, name) => {
+            const item = images[index];
+            if (item !== undefined) attachments.markUploaded(item, name);
+          },
+        });
+        uploadController = undefined;
+        showUploadBox(undefined);
+        if (!batch.ok) {
+          sending = false;
+          attachments.setLocked(false);
+          say(uploadFailureMessage(batch), 'error');
+          refreshButtons();
+          void refreshLive();
+          return;
+        }
+        uploads = batch.names;
+      }
+      // at once: under a heavy load the terminal may take a while to take it
+      say(images.length > 0 ? `Sending ${images.length === 1 ? 'the image' : `${images.length} images`} to the terminal…` : 'Sending to the terminal…', 'busy');
+      const reply = await postSend(uploads === undefined ? { text, images: [], id, ...flags } : { text, uploads, id, ...flags });
+      if (reply.kind === 'missing-uploads' && allowReupload) {
+        attachments.forgetUploaded(new Set(reply.missing));
+        return run(false);
+      }
       sending = false;
-      if (outcome === undefined && images.length === 0) {
+      attachments.setLocked(false);
+      if (reply.kind === 'unreachable' && images.length === 0) {
         waitToSend(id, text, 'The viewer did not answer: the prompt waits here and goes once it answers again.');
         void refreshLive();
         return;
       }
-      if (outcome?.ok === true) {
-        if (text !== '' || images.length > 0) onSent(text);
-        void phraseBar.refresh();
-        input.value = '';
-        writeDraft(draftKey, '');
-        attachments.clear();
-        fit();
-        throughFile.hidden = true;
+      switch (reply.kind) {
+        case 'outcome':
+          if (reply.outcome.ok) {
+            if (text !== '' || images.length > 0) onSent(text);
+            void phraseBar.refresh();
+            input.value = '';
+            writeDraft(draftKey, '');
+            attachments.clear();
+            fit();
+            throughFile.hidden = true;
+          }
+          say(outcomeMessage(reply.outcome), reply.outcome.ok ? 'ok' : 'error');
+          break;
+        case 'refused':
+          say(`${reply.message} The text stays in the box.`, 'error');
+          break;
+        case 'missing-uploads':
+          say('Some uploaded images were missing on the server — press Send to upload them again.', 'error');
+          break;
+        case 'unreachable':
+          say('The viewer server did not answer. The text stays in the box.', 'error');
+          break;
+        default:
+          unexpectedSendReply(reply);
       }
-      say(outcome === undefined ? 'The viewer server did not answer. The text stays in the box.' : outcomeMessage(outcome), outcome?.ok === true ? 'ok' : 'error');
       refreshButtons();
       void refreshLive();
-    });
+    };
+    void run(true);
   };
   form.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -822,6 +939,8 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
       });
     },
     dispose() {
+      uploadController?.abort();
+      attachments.dispose();
       live.stop();
       window.removeEventListener('online', onOnline);
       clearTimeout(noticeTimer);
@@ -898,4 +1017,107 @@ function answerBlock(block) {
  */
 function unexpected(value) {
   throw new Error(`Unexpected side answer block ${JSON.stringify(value)}`);
+}
+
+/**
+ * @param {never} value
+ * @returns {never}
+ */
+function unexpectedSendReply(value) {
+  throw new Error(`Unexpected send reply ${JSON.stringify(value)}`);
+}
+
+/**
+ * @param {{ reason: 'aborted' | 'network' | 'refused', message: string, done: number, total: number }} failure
+ * @returns {string}
+ */
+function uploadFailureMessage(failure) {
+  switch (failure.reason) {
+    case 'aborted':
+      return failure.done > 0 ? `Upload cancelled (${failure.done} of ${failure.total} already uploaded).` : 'Upload cancelled.';
+    case 'refused':
+      return `${failure.message} The text stays in the box.`;
+    case 'network':
+      return failure.done > 0
+        ? `Upload interrupted (${failure.done} of ${failure.total} uploaded). Press Send to continue.`
+        : 'Could not upload the images — the viewer server did not answer. The text stays in the box.';
+    default: {
+      /** @type {never} */
+      const unknown = failure.reason;
+      throw new Error(`Unexpected upload failure ${String(unknown)}`);
+    }
+  }
+}
+
+/**
+ * Uploads one image as raw bytes to POST /api/upload. Uses XMLHttpRequest in browsers for byte-level progress events;
+ * falls back to fetch where XMLHttpRequest is absent (such as Node/JSDOM unit tests).
+ * @type {import('../model/image-upload.js').UploadSingle}
+ */
+async function uploadSingleImage({ mediaType, blob }, onBytes, signal) {
+  if (signal.aborted) return { ok: false, reason: 'aborted', message: 'Upload cancelled.' };
+  if (typeof XMLHttpRequest === 'function') return uploadViaXhr(mediaType, blob, onBytes, signal);
+  return uploadViaFetch(mediaType, blob, onBytes, signal);
+}
+
+/**
+ * @param {string} mediaType
+ * @param {Blob} blob
+ * @param {(loaded: number) => void} onBytes
+ * @param {AbortSignal} signal
+ * @returns {Promise<import('../model/image-upload.js').UploadSingleOutcome>}
+ */
+function uploadViaXhr(mediaType, blob, onBytes, signal) {
+  return new Promise((resolve) => {
+    const request = new XMLHttpRequest();
+    let settled = false;
+    /** @param {import('../model/image-upload.js').UploadSingleOutcome} outcome */
+    const finish = (outcome) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      resolve(outcome);
+    };
+    const onAbort = () => {
+      request.abort();
+      finish({ ok: false, reason: 'aborted', message: 'Upload cancelled.' });
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    request.open('POST', '/api/upload');
+    request.setRequestHeader('X-Viewer', '1');
+    request.setRequestHeader('Content-Type', mediaType);
+    request.responseType = 'json';
+    request.upload.addEventListener('progress', (event) => onBytes(event.loaded));
+    request.addEventListener('abort', () => finish({ ok: false, reason: 'aborted', message: 'Upload cancelled.' }));
+    request.addEventListener('error', () => finish({ ok: false, reason: 'network', message: 'The viewer server did not answer.' }));
+    request.addEventListener('load', () => {
+      if (request.status >= 200 && request.status < 300) onBytes(blob.size);
+      finish(parseUploadReply(request.status, request.response));
+    });
+    request.send(blob);
+  });
+}
+
+/**
+ * @param {string} mediaType
+ * @param {Blob} blob
+ * @param {(loaded: number) => void} onBytes
+ * @param {AbortSignal} signal
+ * @returns {Promise<import('../model/image-upload.js').UploadSingleOutcome>}
+ */
+async function uploadViaFetch(mediaType, blob, onBytes, signal) {
+  try {
+    const response = await fetch('/api/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': mediaType, 'X-Viewer': '1' },
+      body: blob,
+      signal,
+    });
+    const body = await response.json().catch(() => undefined);
+    if (response.ok) onBytes(blob.size);
+    return parseUploadReply(response.status, body);
+  } catch {
+    if (signal.aborted) return { ok: false, reason: 'aborted', message: 'Upload cancelled.' };
+    return { ok: false, reason: 'network', message: 'The viewer server did not answer.' };
+  }
 }

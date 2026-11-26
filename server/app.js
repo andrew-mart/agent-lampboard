@@ -55,7 +55,7 @@ import { createChanges } from './changes.js';
 import { moduleGraph } from './module-graph.js';
 import { createTranscriptCache } from './transcript-cache.js';
 import { readTaskOutput, seenTasks } from './tasks.js';
-import { parseImages } from './uploads.js';
+import { maxImageBytes as maxUploadImageBytes, maxUploads, parseImages, parseImageType, parseUploadNames } from './uploads.js';
 import { readPromptLine } from './prompt-files.js';
 import { vscodeBasePath } from './vscode.js';
 
@@ -694,6 +694,7 @@ async function upgradeToVsCode(deps, request, socket, head) {
 async function handleWrite(deps, url, request, response) {
   // a file's bytes as they are: from the viewer's page alone, as its JSON is
   if (url.pathname === '/api/file/upload') return receiveUpload(deps, url, request, response);
+  if (url.pathname === '/api/upload') return receiveImageUpload(deps, request, response);
   const fromViewer =
     deps.allowedOrigins.has(request.headers.origin ?? '') &&
     (request.headers['content-type'] ?? '').startsWith('application/json') &&
@@ -742,10 +743,19 @@ async function handleWrite(deps, url, request, response) {
         response.writeHead(400).end(attached.error);
         return;
       }
+      const uploaded = parseUploadNames(isRecord(body) ? body.uploads : undefined);
+      if (!uploaded.ok) return sendJson(response, { ok: false, error: 'bad-uploads', message: uploaded.error }, 400);
+      if (uploaded.names.length + attached.images.length > maxUploads) {
+        return sendJson(response, { ok: false, error: 'bad-uploads', message: `Attach at most ${maxUploads} images at a time.` }, 400);
+      }
+      const resolved = await deps.uploads.resolve(uploaded.names);
+      if (!resolved.ok) return sendJson(response, { ok: false, error: 'missing-uploads', missing: resolved.missing }, 409);
       /** @returns {Promise<import('../public/model/composer.js').SendOutcome>} */
       const sending = async () => {
-        // Claude Code and Codex open attached images by path; the files stay only if the terminal took the prompt.
-        const paths = await deps.uploads.save(attached.images);
+        // Claude Code and Codex open attached images by path; inline images stay only if the terminal took the prompt,
+        // while pre-uploaded images stay on disk so a refused send can retry without re-uploading.
+        const inlinePaths = await deps.uploads.save(attached.images);
+        const paths = [...resolved.paths, ...inlinePaths];
         const typed = isRecord(body) && typeof body.text === 'string' ? body.text : '';
         const whole = withAttachedImages(typed, paths);
         // sent through a file — typed in whole, it came cut short: the terminal gets only a line to read it there
@@ -754,7 +764,7 @@ async function handleWrite(deps, url, request, response) {
         const mark = await transcriptEnd(deps.index, sessionId);
         // now: what waits in Claude Code's queue goes at once, the prompt with it — Ctrl+Enter on the page
         const outcome = isRecord(body) && body.now === true ? await deps.composer.sendNow(sessionId, prompt) : await deps.composer.send(sessionId, prompt);
-        if (!outcome.ok) await deps.uploads.remove(paths);
+        if (!outcome.ok) await deps.uploads.remove(inlinePaths);
         // a phrase the terminal took counts as sent once more — unless sent by a UI control (/model, /effort)
         else if (!isRecord(body) || body.phrase !== false) await deps.phrases.sent(typed, Date.now());
         if (outcome.ok && mark !== undefined) void deps.promptCuts.watch(sessionId, prompt, mark).catch((error) => console.error(`Watching session ${sessionId} for its prompt failed`, error));
@@ -1980,6 +1990,62 @@ async function sendFolderZip(url, response) {
     // a file gone or unreadable midway, or the device gone: the zip cannot be finished — it is cut, not passed off whole
     response.destroy();
   }
+}
+
+/**
+ * A single attached image uploaded as raw bytes ahead of /api/send, so large batches go chunk by chunk with progress.
+ * @param {Deps} deps
+ * @param {http.IncomingMessage} request
+ * @param {http.ServerResponse} response
+ */
+async function receiveImageUpload(deps, request, response) {
+  const fromViewer = deps.allowedOrigins.has(request.headers.origin ?? '') && request.headers['x-viewer'] === '1';
+  if (!fromViewer) {
+    request.resume();
+    response.writeHead(403).end('Forbidden: request did not come from the viewer page');
+    return;
+  }
+  const mediaType = parseImageType(request.headers['content-type']);
+  if (mediaType === undefined) {
+    request.resume();
+    return sendJson(response, { ok: false, error: 'Only PNG, JPEG, GIF and WebP images can be attached.' }, 400);
+  }
+  if (Number(request.headers['content-length'] ?? 0) > maxUploadImageBytes) {
+    request.resume();
+    return sendJson(response, { ok: false, error: `An attached image must be under ${maxUploadImageBytes / 1024 / 1024} MB.` }, 413);
+  }
+  const bytes = await readBinaryBody(request, maxUploadImageBytes);
+  if (bytes === undefined) {
+    return sendJson(response, { ok: false, error: `An attached image must be under ${maxUploadImageBytes / 1024 / 1024} MB.` }, 413);
+  }
+  if (bytes.length === 0) {
+    return sendJson(response, { ok: false, error: 'An attached image must not be empty.' }, 400);
+  }
+  const { name } = await deps.uploads.saveOne({ mediaType, bytes });
+  return sendJson(response, { ok: true, name });
+}
+
+/**
+ * @param {http.IncomingMessage} request
+ * @param {number} limit
+ * @returns {Promise<Buffer | undefined>} — undefined if the body exceeds limit
+ */
+async function readBinaryBody(request, limit) {
+  /** @type {Buffer[]} */
+  const chunks = [];
+  let size = 0;
+  let tooLarge = false;
+  for await (const chunk of request) {
+    if (!(chunk instanceof Buffer)) continue;
+    size += chunk.length;
+    if (size > limit) {
+      tooLarge = true;
+      chunks.length = 0;
+      continue;
+    }
+    if (!tooLarge) chunks.push(chunk);
+  }
+  return tooLarge ? undefined : Buffer.concat(chunks);
 }
 
 /**

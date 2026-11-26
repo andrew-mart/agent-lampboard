@@ -4886,13 +4886,79 @@ table.diff tr.gap td {
   flex: 1 1 100%;
   flex-wrap: wrap;
   gap: 10px;
-  padding: 4px 0 2px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 8px 8px 2px 0;
 }
 
 .attachment {
   position: relative;
   width: 64px;
   height: 64px;
+}
+
+.attachment.uploaded img {
+  border-color: var(--ok);
+}
+
+.composer-attachments.locked .attachment-remove {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* chunked image upload progress bar below the prompt box */
+.composer-upload {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev);
+}
+
+.composer-upload[hidden] {
+  display: none;
+}
+
+.composer-upload-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.composer-upload-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-upload-cancel {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.composer-upload-cancel:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.composer-upload-bar {
+  width: 100%;
+  height: 6px;
+  accent-color: var(--accent);
 }
 
 .attachment img {
