@@ -24,10 +24,30 @@ export function createPromptFiles(dir) {
   };
 }
 
+/** Above this count or byte size, image batches go through a prompt file instead of flooding the terminal's input buffer. */
+export const maxInlineImagePaths = 10;
+export const maxInlineImagePromptBytes = 1024;
+
+/**
+ * Whether a prompt carrying attached image paths should automatically be routed through a prompt file so Windows
+ * ConPTY 1 KB reads and terminal image-paste replacement never drop or scramble paths.
+ * @param {string} whole — prompt text with attached image paths appended
+ * @param {number} imageCount
+ * @returns {boolean}
+ */
+export function needsPromptFileForImages(whole, imageCount) {
+  return imageCount > 0 && (imageCount > maxInlineImagePaths || Buffer.byteLength(whole) > maxInlineImagePromptBytes);
+}
+
 /**
  * The line the agent's terminal gets in place of a prompt put in a file: short enough to come in one read.
  * @param {string} path — where the prompt is
+ * @param {number} [imageCount] - how many attached image paths are listed inside the file
  */
-export function readPromptLine(path) {
+export function readPromptLine(path, imageCount = 0) {
+  if (imageCount > 0) {
+    const noun = imageCount === 1 ? 'image' : 'images';
+    return `The prompt (with ${imageCount} attached ${noun}) is in the file ${path}: read it whole, inspect all listed images, and do what it says.`;
+  }
   return `The prompt is in the file ${path}: read it whole and do what it says.`;
 }

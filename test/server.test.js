@@ -1532,7 +1532,7 @@ test('upload_Should_ServeOnlyImagesTheViewerSaved', async (t) => {
   assert.deepEqual(statuses, [404, 404, 404]);
 });
 
-test('uploadImage_Should_SaveBinaryImagesIndividually_And_SendPromptWithMoreThanTenUploads', async (t) => {
+test('uploadImage_Should_SaveBinaryImagesIndividually_And_RouteLargeImageBatchesThroughPromptFile', async (t) => {
   const { port, base, calls } = await withServer(t);
   /** @type {string[]} */
   const names = [];
@@ -1549,20 +1549,48 @@ test('uploadImage_Should_SaveBinaryImagesIndividually_And_SendPromptWithMoreThan
     names.push(json.name);
   }
 
-  const sendResponse = await post(port, '/api/send', pageHeaders(port), JSON.stringify({ session: sessionId, text: 'Check all 12 pages', uploads: names }));
-
-  assert.equal(sendResponse.status, 200);
-  const sent = calls[0]?.[2] ?? '';
-  const lines = sent.split('\n');
-  assert.equal(lines[0], 'Check all 12 pages');
-  assert.equal(lines[2], 'Attached images:');
-  const paths = lines.slice(3);
-  assert.equal(paths.length, 12);
+  // Small batch (<= 10 images and <= 1024 bytes) still goes directly into the terminal
+  const smallResponse = await post(port, '/api/send', pageHeaders(port), JSON.stringify({ session: sessionId, text: 'Check 2 pages', uploads: names.slice(0, 2) }));
+  assert.equal(smallResponse.status, 200);
+  const smallTyped = calls[0]?.[2] ?? '';
+  const smallLines = smallTyped.split('\n');
+  assert.equal(smallLines[0], 'Check 2 pages');
+  assert.equal(smallLines[2], 'Attached images:');
   assert.deepEqual(
-    paths.map((filePath) => basename(filePath)),
+    smallLines.slice(3).map((filePath) => basename(filePath)),
+    names.slice(0, 2),
+  );
+  assert.deepEqual(await readFile(smallLines[3] ?? ''), pngBytes);
+
+  // Large batch (> 10 images) automatically goes through a prompt file so terminal input never overflows or scrambles paths
+  const largeResponse = await post(port, '/api/send', pageHeaders(port), JSON.stringify({ session: sessionId, text: 'Check all 12 pages', uploads: names }));
+  assert.equal(largeResponse.status, 200);
+  const largeTyped = calls[1]?.[2] ?? '';
+  assert.ok(Buffer.byteLength(largeTyped) <= 1024, `expected short prompt-file line, got ${Buffer.byteLength(largeTyped)} bytes`);
+  assert.ok(largeTyped.includes('12 attached images'), `expected image count in prompt-file line, got: ${largeTyped}`);
+  const largePromptFile = /file (\S+\.md)/.exec(largeTyped)?.[1];
+  assert.ok(largePromptFile !== undefined, `expected prompt file path in: ${largeTyped}`);
+  const largeSaved = (await readFile(largePromptFile, 'utf8')).split('\n');
+  assert.equal(largeSaved[0], 'Check all 12 pages');
+  assert.equal(largeSaved[2], 'Attached images:');
+  assert.deepEqual(
+    largeSaved.slice(3).map((filePath) => basename(filePath)),
     names,
   );
-  assert.deepEqual(await readFile(paths[0] ?? ''), pngBytes);
+
+  // Even a single image whose combined prompt exceeds 1024 bytes goes through a prompt file
+  const longText = 'Explain every line in detail. '.repeat(40).trim();
+  const longResponse = await post(port, '/api/send', pageHeaders(port), JSON.stringify({ session: sessionId, text: longText, uploads: names.slice(0, 1) }));
+  assert.equal(longResponse.status, 200);
+  const longTyped = calls[2]?.[2] ?? '';
+  assert.ok(Buffer.byteLength(longTyped) <= 1024, `expected short prompt-file line, got ${Buffer.byteLength(longTyped)} bytes`);
+  assert.ok(longTyped.includes('1 attached image'), `expected singular image count, got: ${longTyped}`);
+  const longPromptFile = /file (\S+\.md)/.exec(longTyped)?.[1];
+  assert.ok(longPromptFile !== undefined, `expected prompt file path in: ${longTyped}`);
+  const longSaved = (await readFile(longPromptFile, 'utf8')).split('\n');
+  assert.equal(longSaved[0], longText);
+  assert.equal(longSaved[2], 'Attached images:');
+  assert.equal(basename(longSaved[3] ?? ''), names[0]);
 });
 
 test('uploadImage_Should_RejectBadRequests_And_SendShouldReportMissingUploadsWithoutDeletingOnRefusal', async (t) => {

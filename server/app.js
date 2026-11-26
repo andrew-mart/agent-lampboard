@@ -56,7 +56,7 @@ import { moduleGraph } from './module-graph.js';
 import { createTranscriptCache } from './transcript-cache.js';
 import { readTaskOutput, seenTasks } from './tasks.js';
 import { maxChunkBytes, maxImageBytes as maxUploadImageBytes, maxUploads, parseImages, parseImageType, parseUploadChunk, parseUploadNames } from './uploads.js';
-import { readPromptLine } from './prompt-files.js';
+import { needsPromptFileForImages, readPromptLine } from './prompt-files.js';
 import { vscodeBasePath } from './vscode.js';
 
 const publicDir = fileURLToPath(new URL('../public', import.meta.url));
@@ -758,8 +758,10 @@ async function handleWrite(deps, url, request, response) {
         const paths = [...resolved.paths, ...inlinePaths];
         const typed = isRecord(body) && typeof body.text === 'string' ? body.text : '';
         const whole = withAttachedImages(typed, paths);
-        // sent through a file — typed in whole, it came cut short: the terminal gets only a line to read it there
-        const prompt = isRecord(body) && body.throughFile === true ? readPromptLine(await deps.promptFiles.save(whole)) : whole;
+        // sent through a file — either asked for after a cut, or automatically for large image batches that would overflow
+        // the terminal's 1 KB reads / scramble pasted image paths: the terminal gets only a short line to read it there
+        const sendThroughFile = (isRecord(body) && body.throughFile === true) || needsPromptFileForImages(whole, paths.length);
+        const prompt = sendThroughFile ? readPromptLine(await deps.promptFiles.save(whole), paths.length) : whole;
         // where Claude Code's transcript stood before the prompt went: what it writes down past it is read for the prompt
         const mark = await transcriptEnd(deps.index, sessionId);
         // now: what waits in Claude Code's queue goes at once, the prompt with it — Ctrl+Enter on the page
