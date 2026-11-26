@@ -16,7 +16,7 @@ import { isRecord, text } from './narrow.js';
  *   | { ok: false, reason: 'aborted' | 'network' | 'refused', message: string }
  * } UploadChunkOutcome
  * @typedef {(request: UploadRequest, onBytes: (loaded: number) => void, signal: AbortSignal) => Promise<UploadChunkOutcome>} UploadSender
- * @typedef {{ readonly done: number, readonly total: number, readonly loadedBytes: number, readonly totalBytes: number, readonly percent: number }} UploadProgress
+ * @typedef {{ readonly done: number, readonly total: number, readonly loadedBytes: number, readonly totalBytes: number, readonly percent: number, readonly bytesPerSec: number | undefined }} UploadProgress
  * @typedef {
  *   | { ok: true, names: readonly string[] }
  *   | { ok: false, reason: 'aborted' | 'network' | 'refused', message: string, done: number, total: number, percent: number }
@@ -30,6 +30,8 @@ const defaultChunkPauseMs = 40;
 const defaultRetryDelayMs = 500;
 const defaultMaxChunkRetries = 2;
 const maxOffsetResyncs = 3;
+const speedWindowMs = 5000;
+const minSpeedSampleMs = 50;
 
 /**
  * Uploads attached images sequentially in small byte chunks, preserving original order and resuming from already
@@ -46,6 +48,7 @@ const maxOffsetResyncs = 3;
  *   chunkPauseMs?: number,
  *   retryDelayMs?: number,
  *   maxChunkRetries?: number,
+ *   now?: () => number,
  * }} options
  * @returns {Promise<UploadBatchOutcome>}
  */
@@ -62,6 +65,7 @@ export async function uploadImages(
     chunkPauseMs = defaultChunkPauseMs,
     retryDelayMs = defaultRetryDelayMs,
     maxChunkRetries = defaultMaxChunkRetries,
+    now = Date.now,
   },
 ) {
   const total = items.length;
@@ -73,13 +77,46 @@ export async function uploadImages(
     if (item.partial !== undefined) return Math.min(item.blob.size, Math.max(0, item.partial.offset));
     return 0;
   });
+  // Server-confirmed bytes per image: used for momentary speed so local OS socket buffering does not fake spikes
+  const confirmed = [...loaded];
   const totalBytes = sizes.reduce((sum, size) => sum + size, 0);
   let done = names.filter((name) => name !== undefined).length;
+  /** @type {Array<{ at: number, bytes: number }>} */
+  const speedSamples = [{ at: now(), bytes: confirmed.reduce((sum, value) => sum + value, 0) }];
+
+  const recordConfirmed = () => {
+    const t = now();
+    const bytes = confirmed.reduce((sum, value) => sum + value, 0);
+    const last = speedSamples.at(-1);
+    if (last !== undefined && bytes < last.bytes) {
+      speedSamples.length = 0;
+      speedSamples.push({ at: t, bytes });
+      return;
+    }
+    speedSamples.push({ at: t, bytes });
+    const cutoff = t - speedWindowMs;
+    while (speedSamples.length > 2) {
+      const second = speedSamples[1];
+      if (second !== undefined && second.at <= cutoff) speedSamples.shift();
+      else break;
+    }
+  };
+
+  const currentBytesPerSec = () => {
+    if (speedSamples.length < 2) return undefined;
+    const oldest = speedSamples[0];
+    const newest = speedSamples.at(-1);
+    if (oldest === undefined || newest === undefined) return undefined;
+    const elapsedMs = newest.at - oldest.at;
+    const deltaBytes = newest.bytes - oldest.bytes;
+    if (elapsedMs < minSpeedSampleMs || deltaBytes <= 0) return undefined;
+    return (deltaBytes * 1000) / elapsedMs;
+  };
 
   const snapshot = () => {
     const loadedBytes = loaded.reduce((sum, value) => sum + value, 0);
     const percent = totalBytes > 0 ? Math.min(100, Math.round((loadedBytes / totalBytes) * 100)) : total > 0 ? Math.round((done / total) * 100) : 100;
-    return { done, total, loadedBytes, totalBytes, percent };
+    return { done, total, loadedBytes, totalBytes, percent, bytesPerSec: currentBytesPerSec() };
   };
   const emitProgress = () => onProgress(snapshot());
   emitProgress();
@@ -171,6 +208,8 @@ export async function uploadImages(
         }
         offset = outcome.received;
         loaded[index] = offset;
+        confirmed[index] = offset;
+        recordConfirmed();
         onPartial?.(index, { id, offset });
         emitProgress();
         if (!(await waitAbortable(chunkPauseMs, batchController.signal))) {
@@ -185,6 +224,8 @@ export async function uploadImages(
         }
         offset = outcome.received >= 0 && outcome.received < imageTotal ? outcome.received : 0;
         loaded[index] = offset;
+        confirmed[index] = offset;
+        recordConfirmed();
         onPartial?.(index, offset > 0 ? { id, offset } : undefined);
         emitProgress();
         continue;
@@ -206,6 +247,8 @@ export async function uploadImages(
       if (outcome.ok) {
         names[index] = outcome.name;
         loaded[index] = item.blob.size;
+        confirmed[index] = item.blob.size;
+        recordConfirmed();
         done++;
         onUploaded(index, outcome.name);
         emitProgress();
@@ -268,13 +311,27 @@ export function parseUploadReply(status, body) {
 }
 
 /**
+ * Formats a throughput measurement in bytes/sec for the upload progress line.
+ * @param {number | undefined} bytesPerSec
+ * @returns {string | undefined}
+ */
+export function formatUploadSpeed(bytesPerSec) {
+  if (bytesPerSec === undefined || !Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return undefined;
+  if (bytesPerSec < 1024) return `${Math.round(bytesPerSec)} B/s`;
+  if (bytesPerSec < 1024 * 1024) return `${Math.round(bytesPerSec / 1024)} KB/s`;
+  return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
+}
+
+/**
  * Human-readable status line above the upload progress bar.
  * @param {UploadProgress} progress
  * @returns {string}
  */
 export function uploadProgressText(progress) {
-  if (progress.total <= 1) return progress.percent > 0 ? `Uploading image — ${progress.percent}%` : 'Uploading image…';
-  return `Uploading images: ${progress.done} of ${progress.total} (${progress.percent}%)`;
+  const speed = formatUploadSpeed(progress.bytesPerSec);
+  const suffix = speed === undefined ? '' : ` · ${speed}`;
+  if (progress.total <= 1) return progress.percent > 0 ? `Uploading image — ${progress.percent}%${suffix}` : 'Uploading image…';
+  return `Uploading images: ${progress.done} of ${progress.total} (${progress.percent}%)${suffix}`;
 }
 
 /** @returns {string} */

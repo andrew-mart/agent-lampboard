@@ -383,6 +383,8 @@ test('composer_Should_UploadLargeImageIn256KBChunks_And_ResumeFromFailedChunk', 
   const secondRunChunks = [];
   /** @type {unknown[]} */
   const sendBodies = [];
+  /** @type {string[]} */
+  const seenLabels = [];
 
   const { composer, cleanup } = await mountComposer(async (path, init) => {
     if (path.startsWith('/api/upload')) {
@@ -392,10 +394,13 @@ test('composer_Should_UploadLargeImageIn256KBChunks_And_ResumeFromFailedChunk', 
       const total = Number(url.searchParams.get('total') ?? -1);
       const body = init?.body;
       const size = body instanceof window.Blob ? body.size : body instanceof Blob ? body.size : 0;
+      const label = composer.element.querySelector('.composer-upload-label')?.textContent ?? '';
+      if (label !== '') seenLabels.push(label);
       const entry = { id, offset, total, size };
       if (failLastChunk) {
         firstRunChunks.push(entry);
         if (offset + size >= total) return new Response('Bad gateway', { status: 502 });
+        await settle(65);
         return new Response(JSON.stringify({ ok: true, done: false, received: offset + size }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       secondRunChunks.push(entry);
@@ -434,6 +439,7 @@ test('composer_Should_UploadLargeImageIn256KBChunks_And_ResumeFromFailedChunk', 
   sendBtn.click();
   await waitUntil(() => sendBodies.length === 1);
 
+  assert.ok(seenLabels.some((text) => /[KM]?B\/s/.test(text)), `expected live upload speed in label, got: ${seenLabels.join(' | ')}`);
   assert.deepEqual(secondRunChunks, [{ id: uploadId, offset: 512 * 1024, total: 600 * 1024, size: 88 * 1024 }]);
   assert.deepEqual(/** @type {Record<string, unknown>} */ (sendBodies[0]).uploads, ['20261126_144000-big01.png']);
 });

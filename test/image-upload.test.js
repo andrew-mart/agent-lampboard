@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultChunkBytes, parseUploadReply, uploadImages, uploadProgressText } from '../public/model/image-upload.js';
+import { defaultChunkBytes, formatUploadSpeed, parseUploadReply, uploadImages, uploadProgressText } from '../public/model/image-upload.js';
 
 /**
  * @param {number} bytes
@@ -231,6 +231,52 @@ test('parseUploadReply_And_uploadProgressText_Should_HandleAllOutcomes', () => {
   assert.deepEqual(parseUploadReply(413, { ok: false, error: 'An attached image must be under 15 MB.' }), { ok: false, reason: 'refused', message: 'An attached image must be under 15 MB.' });
   assert.deepEqual(parseUploadReply(502, undefined), { ok: false, reason: 'network', message: 'The viewer server did not answer.' });
 
-  assert.equal(uploadProgressText({ done: 0, total: 1, loadedBytes: 42, totalBytes: 100, percent: 42 }), 'Uploading image — 42%');
-  assert.equal(uploadProgressText({ done: 12, total: 33, loadedBytes: 3600, totalBytes: 10000, percent: 36 }), 'Uploading images: 12 of 33 (36%)');
+  assert.equal(formatUploadSpeed(undefined), undefined);
+  assert.equal(formatUploadSpeed(0), undefined);
+  assert.equal(formatUploadSpeed(512), '512 B/s');
+  assert.equal(formatUploadSpeed(185 * 1024), '185 KB/s');
+  assert.equal(formatUploadSpeed(1.6 * 1024 * 1024), '1.6 MB/s');
+
+  assert.equal(uploadProgressText({ done: 0, total: 1, loadedBytes: 42, totalBytes: 100, percent: 42, bytesPerSec: undefined }), 'Uploading image — 42%');
+  assert.equal(uploadProgressText({ done: 0, total: 1, loadedBytes: 50, totalBytes: 100, percent: 50, bytesPerSec: 1.6 * 1024 * 1024 }), 'Uploading image — 50% · 1.6 MB/s');
+  assert.equal(uploadProgressText({ done: 12, total: 33, loadedBytes: 3600, totalBytes: 10000, percent: 36, bytesPerSec: 185 * 1024 }), 'Uploading images: 12 of 33 (36%) · 185 KB/s');
+});
+
+test('uploadImages_Should_ComputeMomentarySpeedFromConfirmedChunks_And_IgnorePreuploadedBytes', async () => {
+  let clock = 1000;
+  const kept = itemOf(1000 * 1024, { uploaded: 'already.jpg' });
+  const pending = itemOf(768 * 1024);
+  /** @type {Array<{ loadedBytes: number, bytesPerSec: number | undefined }>} */
+  const samples = [];
+
+  const outcome = await uploadImages([kept, pending], {
+    chunkPauseMs: 0,
+    retryDelayMs: 0,
+    now: () => clock,
+    signal: new AbortController().signal,
+    onProgress: (progress) => samples.push({ loadedBytes: progress.loadedBytes, bytesPerSec: progress.bytesPerSec }),
+    onUploaded: () => undefined,
+    upload: async ({ blob, chunk }) => {
+      assert.ok(chunk !== undefined);
+      if (chunk.offset === 0) {
+        clock += 2000; // 256 KB in 2s = 128 KB/s
+        return { ok: true, kind: 'chunk', received: blob.size };
+      }
+      if (chunk.offset === 256 * 1024) {
+        clock += 1000; // +256 KB in 1s -> 512 KB in 3s ≈ 170.7 KB/s
+        return { ok: true, kind: 'chunk', received: chunk.offset + blob.size };
+      }
+      clock += 6000; // +256 KB in 6s -> sliding 5s window drops old samples -> 256 KB / 6s ≈ 42.7 KB/s
+      return { ok: true, kind: 'done', name: 'fresh.jpg' };
+    },
+  });
+
+  assert.deepEqual(outcome, { ok: true, names: ['already.jpg', 'fresh.jpg'] });
+  assert.equal(samples[0]?.bytesPerSec, undefined, 'no speed before first confirmed chunk');
+  const afterChunk0 = samples.find((s) => s.loadedBytes === (1000 + 256) * 1024)?.bytesPerSec;
+  const afterChunk1 = samples.find((s) => s.loadedBytes === (1000 + 512) * 1024)?.bytesPerSec;
+  const afterChunk2 = samples.at(-1)?.bytesPerSec;
+  assert.ok(afterChunk0 !== undefined && Math.abs(afterChunk0 - 128 * 1024) < 1, `expected 128 KB/s, got ${afterChunk0}`);
+  assert.ok(afterChunk1 !== undefined && Math.abs(afterChunk1 - (512 * 1024) / 3) < 1, `expected ~170.7 KB/s, got ${afterChunk1}`);
+  assert.ok(afterChunk2 !== undefined && Math.abs(afterChunk2 - (256 * 1024) / 6) < 1, `expected ~42.7 KB/s after slowdown, got ${afterChunk2}`);
 });

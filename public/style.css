@@ -4936,6 +4936,7 @@ table.diff tr.gap td {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .composer-upload-cancel {
