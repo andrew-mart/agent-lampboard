@@ -404,9 +404,12 @@ export function createComposer(sessionId, { agent, focusBox, placeOf, asides, on
     throughFile.hidden = false;
     void post('/api/cut-taken', {});
   };
+  let liveSeq = 0;
   const refreshLive = async () => {
+    const request = ++liveSeq;
     const response = await fetch(`/api/live?session=${encodeURIComponent(sessionId)}`).catch(() => undefined);
     const json = response?.ok ? await response.json().catch(() => undefined) : undefined;
+    if (request !== liveSeq) return;
     const live = parseLiveState(json);
     takeCut(parseHeldCut(json));
     const view = live === undefined ? outOfReach : composerState(live, { id: sessionId, agent });

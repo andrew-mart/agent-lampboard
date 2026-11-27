@@ -85,6 +85,8 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
    * @type {Map<string, Promise<unknown>>}
    */
   const turns = new Map();
+  /** Incremented each time a viewer-driven turn starts for a session, so liveState detects turns overlapping a screen read. @type {Map<string, number>} */
+  const turnSeq = new Map();
 
   /**
    * The action once the session's terminal is done with the ones before it.
@@ -94,6 +96,7 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
    * @returns {Promise<T>}
    */
   function inTurn(sessionId, action) {
+    turnSeq.set(sessionId, (turnSeq.get(sessionId) ?? 0) + 1);
     const done = (turns.get(sessionId) ?? Promise.resolve()).then(action);
     const settled = done.catch(() => undefined);
     turns.set(sessionId, settled);
@@ -496,13 +499,19 @@ export function createComposer({ readRecords, herdr, codexPlace, agyPlace = asyn
           return { state: where.kind };
         case 'live': {
           const { place } = where;
-          const screen = await withCodexQuestionOpen(sessionId, place, await terminalOf(place).read());
+          const drivingBefore = turns.has(sessionId);
+          const turnBefore = turnSeq.get(sessionId) ?? 0;
+          const rawScreen = await terminalOf(place).read();
+          // While the viewer itself drives the terminal (rewind, /btw, typing, answering), transient panels on screen
+          // (such as agy's "Rewind Conversation") belong to that operation — never surface them as a dialog card.
+          const driving = drivingBefore || turns.has(sessionId) || (turnSeq.get(sessionId) ?? 0) !== turnBefore;
+          const screen = driving ? rawScreen : await withCodexQuestionOpen(sessionId, place, rawScreen);
           // Codex's terminal showing a sub-agent's thread, or a side conversation, is not where a prompt goes: the page
           // waits for the main thread
           const status = place.agent !== 'codex' || screen === undefined ? place.status : showsSubagent(screen) ? 'subagent' : showsSideConversation(screen) ? 'side' : place.status;
           // Claude Code's queue is in its transcript; Codex's and agy's are on their screens alone
           const queued = place.agent === 'codex' && screen !== undefined ? codexQueued(screen) : place.agent === 'agy' && screen !== undefined ? agyQueued(screen) : [];
-          return { state: 'live', status, pane: place.pane, dialog: screen === undefined ? undefined : dialogOf(place.agent, screen), queued };
+          return { state: 'live', status, pane: place.pane, dialog: driving || screen === undefined ? undefined : dialogOf(place.agent, screen), queued };
         }
         default:
           return { state: where.kind, status: where.status };

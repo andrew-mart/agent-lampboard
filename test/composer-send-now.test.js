@@ -100,3 +100,50 @@ test('composer_Should_ShowSendNowButton_AndSendImmediately_WhileAgyWorks', async
     },
   );
 });
+
+// An older /api/live reply arriving after a newer one must not resurrect a dialog that is already gone
+test('composer_Should_IgnoreStaleOutOfOrderLiveReply_So_GoneDialogNeverReappears', async (t) => {
+  let liveCall = 0;
+  /** @type {((response: Response) => void) | undefined} */
+  let resolveStale;
+  const staleDialog = {
+    lines: ['Rewind Conversation', 'A message picked rewinds at once.'],
+    options: [{ key: '', label: 'Run the tests', detail: '(just now)', checked: undefined, current: true }],
+    tabs: false,
+    previews: true,
+  };
+  Object.assign(globalThis, {
+    matchMedia: () => ({ matches: false }),
+    fetch: async (/** @type {string} */ path) => {
+      if (!path.startsWith('/api/live')) return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      liveCall++;
+      if (liveCall === 2) {
+        return await new Promise((resolve) => {
+          resolveStale = resolve;
+        });
+      }
+      return new Response(JSON.stringify({ state: 'live', status: 'idle', pane: 'w1:p1', queued: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+
+  const composer = createComposer(sessionId, { agent: 'agy', focusBox: 'no', placeOf: () => undefined, asides: createAsideStore(), onSent: () => undefined, onDialog: () => undefined });
+  window.document.body.append(composer.element);
+  t.after(() => {
+    composer.dispose();
+    composer.element.remove();
+  });
+  await settle();
+
+  // Trigger stale slow poll (#2), then a concurrent direct refreshLive (#3, e.g. on online/after action) that settles first with no dialog
+  composer.pokeLive();
+  await settle();
+  window.dispatchEvent(new window.Event('online'));
+  await settle();
+  // Now the earlier slow poll (#2) finally arrives carrying a stale Rewind dialog
+  resolveStale?.(new Response(JSON.stringify({ state: 'live', status: 'idle', pane: 'w1:p1', dialog: staleDialog, queued: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+  await settle();
+
+  const card = composer.element.querySelector('.dialog-card');
+  assert.ok(card instanceof window.HTMLElement);
+  assert.equal(card.hidden, true, 'stale /api/live reply must not show a gone dialog');
+});

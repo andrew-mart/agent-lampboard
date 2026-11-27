@@ -1518,6 +1518,7 @@ function createPage() {
       rewound(reply) {
         composer.say(rewindMessage(reply), 'ok');
         if (reply.ok && reply.prompt !== undefined) composer.fill(reply.prompt);
+        composer.pokeLive();
       },
       putAway() {
         places.set(id, view.place());

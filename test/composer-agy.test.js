@@ -352,3 +352,70 @@ test('btw_And_resumeBtw_Should_DriveAgySideQuestion_AndResumeOpenOverlay', async
     },
   );
 });
+
+// While composer.rewind drives agy's /rewind panel in the terminal, concurrent /api/live polls must not leak that
+// transient "Rewind Conversation" panel as a dialog card for the user to click; when no turn is driving the terminal
+// (e.g. the user typed /rewind manually), liveState still exposes the panel.
+test('liveState_Should_NotLeakRewindPanelAsDialog_While_RewindIsDrivingAgy', async () => {
+  const rewindPanelLines = ['Rewind Conversation', '', '> Run the tests', '  (current)', 'Keyboard: ↑/↓ Navigate  enter Select  esc Cancel'];
+  let mode = /** @type {'input' | 'rewind' | 'restored'} */ ('input');
+  let box = '';
+  let pausedOnce = false;
+  /** @type {(() => void) | undefined} */
+  let panelOpened;
+  const opened = new Promise((resolve) => {
+    panelOpened = () => resolve(undefined);
+  });
+  /** @type {(() => void) | undefined} */
+  let releaseRewind;
+  const canProceed = new Promise((resolve) => {
+    releaseRewind = () => resolve(undefined);
+  });
+
+  /** @param {readonly string[]} args @returns {Promise<import('../server/composer.js').HerdrReply>} */
+  const run = async (args) => {
+    const [, command, , argument] = args;
+    const keys = args.slice(3);
+    if (command === 'list') return { ok: true, json: { result: { panes: [{ agent: 'agy', pane_id: 'w2:p1' }] } }, text: '' };
+    if (command === 'read') {
+      if (mode === 'rewind') return { ok: true, json: undefined, text: [agyScreen(''), ...rewindPanelLines].join('\n') };
+      return { ok: true, json: undefined, text: agyScreen(box) };
+    }
+    if ((command === 'send-text' || command === 'paste-text') && argument !== undefined) box += argument;
+    if (command === 'send-keys') {
+      if (mode === 'input' && keys.includes('enter') && box === '/rewind') {
+        mode = 'rewind';
+        box = '';
+      } else if (mode === 'rewind' && keys.includes('up') && !pausedOnce) {
+        pausedOnce = true;
+        panelOpened?.();
+        await canProceed;
+      } else if (mode === 'rewind' && keys.includes('enter')) {
+        mode = 'restored';
+        box = 'Run the tests';
+      } else if (mode === 'restored' && keys.includes('backspace')) {
+        box = '';
+      }
+    }
+    return { ok: true, json: { result: { type: 'ok' } }, text: '' };
+  };
+
+  const idle = /** @type {const} */ ({ found: 'pane', pane: 'w2:p1', working: false });
+  const composer = createComposer({ readRecords: async () => [], herdr: run, codexPlace: async () => ({ found: 'none' }), agyPlace: async () => idle });
+
+  const rewinding = composer.rewind(conversation, { stepsUp: 1, prompt: 'Run the tests', sentAt: undefined, action: 'both' });
+  await opened;
+  const duringRewind = await composer.liveState(conversation);
+  releaseRewind?.();
+  const outcome = await rewinding;
+
+  // Outside a viewer-driven turn (e.g. user ran /rewind manually), liveState still surfaces the panel
+  mode = 'rewind';
+  const manualPanel = await composer.liveState(conversation);
+
+  assert.deepEqual(outcome, { ok: true, restoredPrompt: true });
+  assert.equal(duringRewind.state, 'live');
+  assert.equal(duringRewind.dialog, undefined);
+  assert.equal(manualPanel.state, 'live');
+  assert.equal(manualPanel.dialog?.lines[0], 'Rewind Conversation');
+});
